@@ -134,15 +134,16 @@ cp src/main/resources/application.properties.example src/main/resources/applicat
 
 ## 截图
 
-<p align="center">
-  <img src="docs/screenshots/home.png" alt="首页" width="400">
-  <img src="docs/screenshots/novel-detail.png" alt="小说详情" width="400">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/ai-image.png" alt="AI绘图" width="400">
-  <img src="docs/screenshots/reader.png" alt="阅读器" width="400">
-</p>
+| 截图 | 说明 |
+|------|------|
+| ![首页](img/index.jpg) | 首页 |
+| ![视觉叙事](img/视觉叙事.jpg) | 视觉叙事 |
+| ![视觉叙事创作引导](img/视觉叙事创作引导.jpg) | 视觉叙事创作引导 |
+| ![视觉叙事创作引导2](img/视觉叙事创作引导2.jpg) | 视觉叙事创作引导2 |
+| ![选择文字](img/选择文字.jpg) | 选择文字 |
+| ![选择文字生成图片](img/选择文字生成图片.jpg) | 选择文字生成图片 |
+| ![对AI生成的内容进行批注](img/对AI生成的内容进行批注.jpg) | 对AI生成的内容进行批注 |
+| ![异能校园-第一章 猎物的选定](img/异能校园-第一章_猎物的选定-6747.44116227872.png) | 异能校园-第一章 猎物的选定 |
 
 ---
 

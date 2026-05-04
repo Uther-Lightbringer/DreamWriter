@@ -261,6 +261,90 @@
             box-shadow: 0 15px 40px rgba(0, 150, 136, 0.5);
         }
 
+        /* 按钮下拉菜单组 */
+        .dream-btn-group {
+            position: relative;
+            display: inline-flex;
+        }
+
+        .dream-btn-works {
+            background: linear-gradient(135deg, #5c6bc0, #7986cb);
+            color: white;
+            box-shadow: 0 8px 25px rgba(92, 107, 192, 0.4);
+        }
+
+        .dream-btn-works:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(92, 107, 192, 0.5);
+        }
+
+        .dream-btn-settings {
+            background: linear-gradient(135deg, #607d8b, #78909c);
+            color: white;
+            box-shadow: 0 8px 25px rgba(96, 125, 139, 0.4);
+        }
+
+        .dream-btn-settings:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 15px 40px rgba(96, 125, 139, 0.5);
+        }
+
+        .dropdown-arrow {
+            font-size: 0.75rem;
+            transition: transform 0.3s ease;
+            margin-left: 2px;
+        }
+
+        .dream-btn-group.open .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+
+        .works-dropdown,
+        .settings-dropdown {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%) translateY(-10px);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 100;
+            min-width: 180px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+            padding: 8px;
+            pointer-events: none;
+        }
+
+        .dream-btn-group.open .works-dropdown,
+        .dream-btn-group.open .settings-dropdown {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(-50%) translateY(0);
+            pointer-events: auto;
+        }
+
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            color: var(--text-dark);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .dropdown-item:hover {
+            background: rgba(156, 39, 176, 0.1);
+            color: var(--accent-purple);
+        }
+
         /* 小说列表 - 玻璃态卡片 */
         .novel-list {
             display: grid;
@@ -495,46 +579,52 @@
                 <span>🤖</span>
                 <span>AI 对话助手</span>
             </a>
-            <a href="/novel-generator" class="dream-btn dream-btn-purple">
-                <span>📖</span>
-                <span>梦境创作</span>
+            <a href="/creative-guide" class="dream-btn dream-btn-teal">
+                <span>✨</span>
+                <span>创作工坊</span>
             </a>
             <a href="/ai-image-generator" class="dream-btn dream-btn-pink">
                 <span>🎨</span>
                 <span>梦境画坊</span>
             </a>
-            <a href="/ai-image-history" class="dream-btn dream-btn-teal">
-                <span>📷</span>
-                <span>梦境画廊</span>
-            </a>
-            <a href="/creative-guide" class="dream-btn" style="background: linear-gradient(135deg, #ff9800, #ffb74d); color: white; box-shadow: 0 8px 25px rgba(255, 152, 0, 0.4);">
-                <span>✨</span>
-                <span>创作引导</span>
-            </a>
-            <a href="/genre-select" class="dream-btn" style="background: linear-gradient(135deg, #8e24aa, #ba68c8); color: white; box-shadow: 0 8px 25px rgba(142, 36, 170, 0.4);">
-                <span>📝</span>
-                <span>体裁创作</span>
-            </a>
-            <a href="/scripts" class="dream-btn" style="background: linear-gradient(135deg, #5c6bc0, #7986cb); color: white; box-shadow: 0 8px 25px rgba(92, 107, 192, 0.4);">
-                <span>🎬</span>
-                <span>我的剧本</span>
-            </a>
-            <a href="/visual-works" class="dream-btn" style="background: linear-gradient(135deg, #26a69a, #4db6ac); color: white; box-shadow: 0 8px 25px rgba(38, 166, 154, 0.4);">
-                <span>🎨</span>
-                <span>视觉叙事</span>
-            </a>
-            <a href="/essays" class="dream-btn" style="background: linear-gradient(135deg, #ef6c00, #ff8a65); color: white; box-shadow: 0 8px 25px rgba(239, 108, 0, 0.4);">
-                <span>✍️</span>
-                <span>我的散文</span>
-            </a>
-            <a href="/settings/deepseek" class="dream-btn" style="background: linear-gradient(135deg, #607d8b, #78909c); color: white; box-shadow: 0 8px 25px rgba(96, 125, 139, 0.4);">
-                <span>⚙️</span>
-                <span>模型设置</span>
-            </a>
-            <a href="/settings/image" class="dream-btn" style="background: linear-gradient(135deg, #e91e63, #f06292); color: white; box-shadow: 0 8px 25px rgba(233, 30, 99, 0.4);">
-                <span>🎨</span>
-                <span>绘画模型</span>
-            </a>
+            <div class="dream-btn-group">
+                <button class="dream-btn dream-btn-works" onclick="toggleWorksMenu()">
+                    <span>📚</span>
+                    <span>我的作品</span>
+                    <span class="dropdown-arrow">▾</span>
+                </button>
+                <div class="works-dropdown" id="worksDropdown">
+                    <a href="/scripts" class="dropdown-item">
+                        <span>🎬</span>
+                        <span>我的剧本</span>
+                    </a>
+                    <a href="/visual-works" class="dropdown-item">
+                        <span>🖼️</span>
+                        <span>视觉叙事</span>
+                    </a>
+                    <a href="/essays" class="dropdown-item">
+                        <span>✍️</span>
+                        <span>我的散文</span>
+                    </a>
+                </div>
+            </div>
+            <div class="dream-btn-group">
+                <button class="dream-btn dream-btn-settings" onclick="toggleSettingsMenu()">
+                    <span>⚙️</span>
+                    <span>系统设置</span>
+                    <span class="dropdown-arrow">▾</span>
+                </button>
+                <div class="settings-dropdown" id="settingsDropdown">
+                    <a href="/settings/deepseek" class="dropdown-item">
+                        <span>🤖</span>
+                        <span>模型设置</span>
+                    </a>
+                    <a href="/settings/image" class="dropdown-item">
+                        <span>🎨</span>
+                        <span>绘画模型</span>
+                    </a>
+                </div>
+            </div>
         </div>
 
         <!-- 小说列表 -->
@@ -661,6 +751,32 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        // 下拉菜单切换
+        function toggleWorksMenu() {
+            const group = event.target.closest('.dream-btn-group');
+            closeAllMenus(group);
+            group.classList.toggle('open');
+        }
+
+        function toggleSettingsMenu() {
+            const group = event.target.closest('.dream-btn-group');
+            closeAllMenus(group);
+            group.classList.toggle('open');
+        }
+
+        function closeAllMenus(except) {
+            document.querySelectorAll('.dream-btn-group.open').forEach(g => {
+                if (g !== except) g.classList.remove('open');
+            });
+        }
+
+        // 点击其他区域关闭菜单
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.dream-btn-group')) {
+                closeAllMenus();
+            }
+        });
     </script>
 </body>
 </html>
