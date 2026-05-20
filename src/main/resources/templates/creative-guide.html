@@ -1488,6 +1488,288 @@
             font-weight: 600;
         }
 
+        .view-outline-btn {
+            display: block;
+            width: 100%;
+            margin-top: 10px;
+            padding: 10px;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .view-outline-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(156, 39, 176, 0.4);
+        }
+
+        /* 大纲模态框 */
+        .outline-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .outline-modal-overlay.open {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .outline-modal {
+            background: white;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 800px;
+            height: 85vh;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 25px 80px rgba(0, 0, 0, 0.25);
+            transform: scale(0.9) translateY(20px);
+            transition: transform 0.3s ease;
+        }
+
+        .outline-modal-overlay.open .outline-modal {
+            transform: scale(1) translateY(0);
+        }
+
+        .outline-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid rgba(156, 39, 176, 0.1);
+        }
+
+        .outline-modal-header h3 {
+            font-family: 'ZCOOL XiaoWei', serif;
+            font-size: 1.3rem;
+            color: var(--text-dark);
+            margin: 0;
+        }
+
+        .modal-close-btn {
+            background: none;
+            border: none;
+            font-size: 1.2rem;
+            color: var(--text-light);
+            cursor: pointer;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .modal-close-btn:hover {
+            background: rgba(156, 39, 176, 0.1);
+            color: var(--accent-purple);
+        }
+
+        .outline-modal-body {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 24px;
+            position: relative;
+            user-select: text;
+        }
+
+        .outline-modal-body .outline-text {
+            font-size: 0.95rem;
+            line-height: 1.8;
+            color: var(--text-dark);
+        }
+
+        .outline-modal-body .outline-text .md-h1 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--accent-purple);
+            margin: 16px 0 10px 0;
+            padding-bottom: 6px;
+            border-bottom: 2px solid rgba(156, 39, 176, 0.2);
+        }
+
+        .outline-modal-body .outline-text .md-h1:first-child {
+            margin-top: 0;
+        }
+
+        .outline-modal-body .outline-text .md-h2 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin: 14px 0 8px 0;
+        }
+
+        .outline-modal-body .outline-text .md-h3 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin: 10px 0 6px 0;
+        }
+
+        .outline-modal-body .outline-text .md-list {
+            margin: 6px 0;
+            padding-left: 24px;
+            list-style-type: disc;
+        }
+
+        .outline-modal-body .outline-text .md-list li {
+            margin: 4px 0;
+            font-size: 0.95rem;
+        }
+
+        .outline-modal-body .outline-text strong {
+            color: var(--accent-purple);
+            font-weight: 600;
+        }
+
+        .outline-modal-body .outline-text ::selection {
+            background: rgba(156, 39, 176, 0.2);
+            color: var(--accent-purple);
+        }
+
+        .outline-modal-annotations {
+            padding: 12px 24px;
+            max-height: 100px;
+            overflow-y: auto;
+            border-top: 1px solid rgba(156, 39, 176, 0.08);
+            background: rgba(156, 39, 176, 0.02);
+        }
+
+        .outline-modal-annotations:empty {
+            display: none;
+        }
+
+        .outline-modal-loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 24px;
+            gap: 16px;
+            color: var(--text-light);
+        }
+
+        .loading-bar {
+            width: 60%;
+            max-width: 300px;
+            height: 4px;
+            background: linear-gradient(90deg, var(--accent-purple), var(--accent-blue), var(--accent-teal));
+            background-size: 200% 100%;
+            border-radius: 2px;
+            animation: loadingShimmer 1.5s ease-in-out infinite;
+        }
+
+        @keyframes loadingShimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .outline-modal-footer {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            padding: 20px 24px;
+            border-top: 1px solid rgba(156, 39, 176, 0.1);
+            flex-shrink: 0;
+        }
+
+        .btn-outline-close {
+            padding: 12px 32px;
+            border: 1px solid rgba(156, 39, 176, 0.2);
+            background: white;
+            color: var(--text-dark);
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-outline-close:hover {
+            background: rgba(156, 39, 176, 0.05);
+            border-color: var(--accent-purple);
+        }
+
+        .btn-outline-modify {
+            padding: 12px 32px;
+            border: none;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            color: white;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-outline-modify:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(156, 39, 176, 0.4);
+        }
+
+        /* 大纲模态框中的批注系统 */
+        .outline-modal-body .annotation-highlight {
+            background: rgba(156, 39, 176, 0.15);
+            border-bottom: 2px solid var(--accent-purple);
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+
+        .outline-annotation-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 12px 0;
+        }
+
+        .outline-annotation-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(156, 39, 176, 0.1);
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: var(--text-dark);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+        }
+
+        .outline-annotation-badge:hover {
+            background: rgba(156, 39, 176, 0.2);
+        }
+
+        .outline-annotation-badge .badge-delete {
+            color: #e53935;
+            font-size: 0.9rem;
+            margin-left: 4px;
+        }
+
+        .outline-annotation-badge .badge-delete:hover {
+            color: #c62828;
+        }
+
         .character-status {
             padding: 8px 12px;
             background: rgba(255, 255, 255, 0.3);
@@ -2519,6 +2801,9 @@
                         <button class="outline-generate-btn" onclick="generateOutline()">生成大纲</button>
                     </div>
                 </div>
+                <button id="viewOutlineBtn" class="view-outline-btn" onclick="openOutlineModal()" style="display:none;">
+                    📄 查看大纲
+                </button>
             </div>
 
             <!-- 分隔线 -->
@@ -2543,8 +2828,11 @@ let currentSessionId = null;
 let currentMessageId = null;
 let pendingSelections = {};
 let pendingAnnotations = []; // 待发送的批注列表 {messageEl, selectedText, annotationText}
+let outlineAnnotations = []; // 大纲批注列表 {selectedText, annotationText}
 
 let isStreaming = false;
+let currentOutlineText = null; // 当前大纲原文
+let isOutlineModalOpen = false; // 大纲模态框是否打开
 
         // 默认配置（从服务器加载）
         let defaultConfig = {
@@ -2637,9 +2925,9 @@ let isStreaming = false;
             }
         }
 
-        async function sendMessage() {
+        async function sendMessage(overrideContent) {
             const input = document.getElementById('chatInput');
-            const originalContent = input.value.trim();
+            const originalContent = overrideContent || input.value.trim();
             if (!originalContent || isStreaming) return;
 
             // 如果有批注，构建带批注的完整内容
@@ -2653,7 +2941,9 @@ let isStreaming = false;
 
             // 添加用户消息（显示原始输入，不包含批注附加内容）
             addUserMessage(originalContent);
-            input.value = '';
+            if (!overrideContent) {
+                input.value = '';
+            }
 
             // 如果没有会话，先创建
             if (!currentSessionId) {
@@ -2761,6 +3051,12 @@ let isStreaming = false;
                                     }
                                 } else if (currentEventType === 'summary_generated') {
                                     showNotification(`📝 ${json.message}（压缩 ${json.turnsSummarized} 轮对话）`, 'info');
+                                } else if (currentEventType === 'chapter_generation_progress') {
+                                    handleChapterGenerationProgress(json);
+                                } else if (currentEventType === 'chapter_generated') {
+                                    handleChapterGenerated(json);
+                                } else if (currentEventType === 'chapter_generation_failed') {
+                                    handleChapterGenerationFailed(json);
                                 } else if (currentEventType === 'image_progress') {
                                     handleImageProgress(json);
                                 } else if (currentEventType === 'image_result') {
@@ -2877,6 +3173,11 @@ let isStreaming = false;
 
                 // 刷新参数面板
                 loadSessionParams();
+
+                // 刷新大纲显示
+                if (currentNovelId) {
+                    loadOutline(currentNovelId);
+                }
 
                 // 发送成功后清空待发送批注（视觉上保留标记，但不再附加到新消息）
                 if (pendingAnnotations.length > 0) {
@@ -3134,7 +3435,9 @@ let isStreaming = false;
                 'remove_memory': '删除记忆',
                 'show_examples': '展示示例',
                 'generate_outline': '生成大纲',
-                'update_outline': '更新大纲'
+                'update_outline': '更新大纲',
+                'auto_generate_all': '一键生成完整方案',
+                'baidu_search': '百度搜索'
             };
 
             contentEl.innerHTML = toolCalls.map(tc => {
@@ -3510,6 +3813,100 @@ let isStreaming = false;
 
                 scrollToBottom();
             }
+        }
+
+        // ==================== 章节生成事件处理 ====================
+
+        // 当前章节生成进度卡片
+        let currentChapterGenCard = null;
+
+        function handleChapterGenerationProgress(data) {
+            const messagesEl = document.getElementById('chatMessages');
+            const stepLabels = {
+                'extracting_context': '提取创作上下文',
+                'analyzing_materials': '分析素材',
+                'expanding': '创作章节内容',
+                'polishing': '润色章节',
+                'saving': '保存章节'
+            };
+            const stepLabel = stepLabels[data.step] || data.step;
+
+            if (!currentChapterGenCard) {
+                // 创建进度卡片
+                currentChapterGenCard = document.createElement('div');
+                currentChapterGenCard.className = 'chapter-gen-progress-card';
+                currentChapterGenCard.style.cssText = 'background: rgba(255,255,255,0.6); backdrop-filter: blur(10px); border-radius: 12px; padding: 16px; margin: 8px 0; border: 1px solid rgba(156,39,176,0.2);';
+                currentChapterGenCard.innerHTML = `
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                        <span class="chapter-gen-spinner" style="display:inline-block;width:16px;height:16px;border:2px solid rgba(156,39,176,0.3);border-top-color:#9c27b0;border-radius:50%;animation:spin 1s linear infinite;"></span>
+                        <strong style="color:#5d4037;">章节生成中</strong>
+                    </div>
+                    <div class="chapter-gen-steps" style="font-size:13px;color:#8d6e63;"></div>
+                `;
+                messagesEl.appendChild(currentChapterGenCard);
+                scrollToBottom();
+            }
+
+            // 更新步骤
+            const stepsEl = currentChapterGenCard.querySelector('.chapter-gen-steps');
+            const existingSteps = stepsEl.querySelectorAll('.step-item');
+            const allSteps = ['extracting_context', 'analyzing_materials', 'expanding', 'polishing', 'saving'];
+            const currentIdx = allSteps.indexOf(data.step);
+
+            let html = '';
+            allSteps.forEach((step, idx) => {
+                const label = stepLabels[step];
+                if (idx < currentIdx) {
+                    html += `<div class="step-item" style="color:#4caf50;">✓ ${label}</div>`;
+                } else if (idx === currentIdx) {
+                    html += `<div class="step-item" style="color:#9c27b0;font-weight:bold;">⟳ ${label}...</div>`;
+                } else {
+                    html += `<div class="step-item" style="color:#bbb;">○ ${label}</div>`;
+                }
+            });
+            stepsEl.innerHTML = html;
+            scrollToBottom();
+        }
+
+        function handleChapterGenerated(data) {
+            // 移除进度卡片
+            if (currentChapterGenCard) {
+                currentChapterGenCard.remove();
+                currentChapterGenCard = null;
+            }
+
+            const messagesEl = document.getElementById('chatMessages');
+            const card = document.createElement('div');
+            card.className = 'chapter-gen-result-card';
+            card.style.cssText = 'background: rgba(255,255,255,0.7); backdrop-filter: blur(10px); border-radius: 12px; padding: 16px; margin: 8px 0; border: 1px solid rgba(76,175,80,0.3);';
+            card.innerHTML = `
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                    <span style="color:#4caf50;font-size:18px;">✓</span>
+                    <strong style="color:#5d4037;">章节生成完成</strong>
+                </div>
+                <div style="font-size:14px;color:#8d6e63;">
+                    <div>标题：${data.title || '未知'}</div>
+                    <div>字数：${data.wordCount || 0} 字</div>
+                    <div>章节ID：${data.chapterId || '未知'}</div>
+                </div>
+            `;
+            messagesEl.appendChild(card);
+            scrollToBottom();
+
+            // 刷新信息面板中的章节列表
+            if (typeof loadChapterList === 'function') {
+                loadChapterList();
+            }
+        }
+
+        function handleChapterGenerationFailed(data) {
+            // 移除进度卡片
+            if (currentChapterGenCard) {
+                currentChapterGenCard.remove();
+                currentChapterGenCard = null;
+            }
+
+            showNotification(`章节生成失败: ${data.error || '未知错误'}`, 'error');
         }
 
         function handleImageResult(data) {
@@ -4044,6 +4441,122 @@ let isStreaming = false;
             }, 5000);
         }
 
+        // 显示一键生成方案结果卡片
+        function showSchemeResultCard(result) {
+            const container = document.getElementById('toolToastContainer');
+            const toast = document.createElement('div');
+            toast.className = 'tool-toast success';
+            toast.style.cssText = 'max-width: 500px; padding: 20px;';
+
+            const ps = result.paramSummary || {};
+            const summary = result.summary || '';
+
+            toast.innerHTML = `
+                <div style="font-weight: bold; font-size: 1.1rem; margin-bottom: 12px; color: var(--accent-purple);">
+                    ✨ 创作方案已生成
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; font-size: 0.9rem;">
+                    <div><span style="color: var(--text-light);">题材：</span>${escapeHtml(ps.题材 || '未设定')}</div>
+                    <div><span style="color: var(--text-light);">风格：</span>${escapeHtml(ps.风格 || '未设定')}</div>
+                    <div><span style="color: var(--text-light);">主角：</span>${escapeHtml(ps.主角 || '未设定')}</div>
+                    <div><span style="color: var(--text-light);">章节：</span>${escapeHtml(ps.章节数 || '未设定')}</div>
+                </div>
+                <div style="font-size: 0.85rem; color: var(--text-light); margin-bottom: 8px;">
+                    📋 角色卡：${result.characterCount || 0}个 &nbsp; 📝 大纲：${result.outlineChapterCount || 0}章
+                </div>
+                ${summary ? `<div style="font-size: 0.85rem; color: var(--text-dark); margin-bottom: 12px; line-height: 1.5; max-height: 80px; overflow: auto;">${escapeHtml(summary)}</div>` : ''}
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button onclick="this.closest('.tool-toast').remove(); showNotification('请告诉AI你对方案的调整意见', 'info')" style="
+                        background: rgba(255,255,255,0.8);
+                        color: var(--text-dark);
+                        border: 1px solid rgba(156,39,176,0.3);
+                        padding: 8px 16px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 0.85rem;
+                    ">调整参数</button>
+                    <button onclick="this.closest('.tool-toast').remove(); showNotification('AI将基于已生成的方案开始创建小说', 'info')" style="
+                        background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+                        color: white;
+                        border: none;
+                        padding: 8px 20px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 0.85rem;
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 4px;
+                    ">✍️ 开始创作</button>
+                </div>
+            `;
+
+            container.appendChild(toast);
+
+            // 15秒后自动淡出
+            setTimeout(() => {
+                toast.classList.add('fade-out');
+                setTimeout(() => toast.remove(), 500);
+            }, 15000);
+        }
+
+        // 显示百度搜索结果显示
+        function showBaiduSearchResults(result) {
+            const container = document.getElementById('toolToastContainer');
+            const toast = document.createElement('div');
+            toast.className = 'tool-toast success';
+            toast.style.cssText = 'max-width: 500px; padding: 20px;';
+
+            const query = result.query || '';
+            const results = result.results || [];
+
+            let resultsHtml = results.map(r => `
+                <div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(156,39,176,0.15);">
+                    <a href="${escapeHtml(r.url)}" target="_blank" style="
+                        color: var(--accent-purple);
+                        text-decoration: none;
+                        font-weight: bold;
+                        font-size: 0.9rem;
+                        display: block;
+                        margin-bottom: 4px;
+                    ">${escapeHtml(r.title)}</a>
+                    <div style="font-size: 0.8rem; color: var(--text-light); line-height: 1.4;">
+                        ${r.abstract ? escapeHtml(r.abstract) : ''}
+                    </div>
+                    <div style="font-size: 0.75rem; color: #aaa; margin-top: 4px;">
+                        ${r.site ? escapeHtml(r.site) : ''}${r.time ? ' · ' + escapeHtml(r.time) : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            toast.innerHTML = `
+                <div style="font-weight: bold; font-size: 1rem; margin-bottom: 12px; color: var(--accent-purple);">
+                    🔍 搜索结果：「${escapeHtml(query)}」
+                </div>
+                <div style="max-height: 300px; overflow-y: auto;">
+                    ${resultsHtml}
+                </div>
+                <div style="margin-top: 12px; text-align: right;">
+                    <button onclick="this.closest('.tool-toast').remove()" style="
+                        background: rgba(255,255,255,0.8);
+                        color: var(--text-dark);
+                        border: 1px solid rgba(156,39,176,0.3);
+                        padding: 6px 16px;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        font-size: 0.85rem;
+                    ">关闭</button>
+                </div>
+            `;
+
+            container.appendChild(toast);
+
+            // 30秒后自动淡出
+            setTimeout(() => {
+                toast.classList.add('fade-out');
+                setTimeout(() => toast.remove(), 500);
+            }, 30000);
+        }
+
         // 显示通用通知
         function showNotification(message, type = 'info') {
             const container = document.getElementById('toolToastContainer');
@@ -4152,6 +4665,20 @@ let isStreaming = false;
                     data.tool === 'generate_character_image') {
                     if (typeof loadCharacterCards === 'function' && characterDrawerOpen) {
                         setTimeout(() => loadCharacterCards(), 300);
+                    }
+                }
+
+                // 一键生成完整方案后，显示方案卡片
+                if (data.tool === 'auto_generate_all') {
+                    if (result && result.success) {
+                        showSchemeResultCard(result);
+                    }
+                }
+
+                // 百度搜索后，显示搜索结果
+                if (data.tool === 'baidu_search') {
+                    if (result && result.success && result.results) {
+                        showBaiduSearchResults(result);
                     }
                 }
             } else {
@@ -4898,14 +5425,19 @@ let isStreaming = false;
                 const novel = await response.json();
 
                 const outlineContent = document.getElementById('outlineContent');
+                const viewOutlineBtn = document.getElementById('viewOutlineBtn');
+
                 if (novel.outline) {
-                    const renderedOutline = renderMarkdown(novel.outline);
+                    // 有大纲时，显示简短预览和"查看大纲"按钮
+                    const previewText = novel.outline.length > 60 ? novel.outline.substring(0, 60) + '...' : novel.outline;
                     outlineContent.innerHTML = `
-                        <div class="outline-text">${renderedOutline}</div>
-                        <div class="outline-actions" style="margin-top: 8px;">
-                            <button class="outline-generate-btn" onclick="generateOutline()">重新生成</button>
+                        <div class="outline-text" style="opacity:0.6;font-size:0.8rem;">
+                            ${escapeHtml(previewText)}
                         </div>
                     `;
+                    viewOutlineBtn.style.display = 'block';
+                    // 保存大纲原文到全局变量
+                    currentOutlineText = novel.outline;
                 } else {
                     outlineContent.innerHTML = `
                         <div class="outline-empty">
@@ -4913,6 +5445,8 @@ let isStreaming = false;
                             <button class="outline-generate-btn" onclick="generateOutline()">生成大纲</button>
                         </div>
                     `;
+                    viewOutlineBtn.style.display = 'none';
+                    currentOutlineText = null;
                 }
             } catch (error) {
                 console.error('加载大纲失败:', error);
@@ -5342,6 +5876,214 @@ let isStreaming = false;
                 closeCharacterModal();
             }
         });
+        // ========== 大纲模态框 ==========
+        function openOutlineModal() {
+            if (!currentOutlineText) return;
+
+            const overlay = document.getElementById('outlineModalOverlay');
+            const body = document.getElementById('outlineModalBody');
+            const annotationsContainer = document.getElementById('outlineModalAnnotations');
+
+            // 渲染大纲内容
+            body.innerHTML = `<div class="outline-text" id="outlineModalText">${renderMarkdown(currentOutlineText)}</div>`;
+
+            // 渲染批注徽章
+            renderOutlineAnnotations();
+
+            // 显示模态框
+            overlay.classList.add('open');
+            isOutlineModalOpen = true;
+
+            // 绑定选中文本事件
+            body.onmouseup = handleOutlineTextSelection;
+        }
+
+        function closeOutlineModal() {
+            const overlay = document.getElementById('outlineModalOverlay');
+            overlay.classList.remove('open');
+            isOutlineModalOpen = false;
+
+            const body = document.getElementById('outlineModalBody');
+            body.onmouseup = null;
+        }
+
+        function closeOutlineModalOnOverlay(event) {
+            if (event.target === event.currentTarget) {
+                closeOutlineModal();
+            }
+        }
+
+        // 大纲文本选中的处理
+        let outlineAnnotationToolbarEl = null;
+
+        function handleOutlineTextSelection(e) {
+            const selection = window.getSelection();
+            const text = selection.toString().trim();
+
+            if (!text || text.length < 2) {
+                hideOutlineAnnotationToolbar();
+                return;
+            }
+
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            showOutlineAnnotationToolbar(rect, text);
+        }
+
+        function showOutlineAnnotationToolbar(rect, selectedText) {
+            hideOutlineAnnotationToolbar();
+
+            const toolbar = document.createElement('button');
+            toolbar.className = 'annotation-toolbar';
+            toolbar.textContent = '批注';
+            toolbar.style.left = (rect.left + rect.width / 2 - 20) + 'px';
+            toolbar.style.top = (rect.top - 40) + 'px';
+            toolbar.style.zIndex = '10001';
+            toolbar.onclick = (e) => {
+                e.stopPropagation();
+                hideOutlineAnnotationToolbar();
+                openOutlineAnnotationDialog(selectedText);
+            };
+
+            document.body.appendChild(toolbar);
+            outlineAnnotationToolbarEl = toolbar;
+        }
+
+        function hideOutlineAnnotationToolbar() {
+            if (outlineAnnotationToolbarEl) {
+                outlineAnnotationToolbarEl.remove();
+                outlineAnnotationToolbarEl = null;
+            }
+        }
+
+        let currentOutlineAnnotationText = null;
+
+        function openOutlineAnnotationDialog(selectedText) {
+            currentOutlineAnnotationText = selectedText;
+
+            const overlay = document.createElement('div');
+            overlay.className = 'annotation-dialog-overlay';
+            overlay.onclick = (e) => {
+                if (e.target === overlay) cancelOutlineAnnotation();
+            };
+
+            const previewText = selectedText.length > 80 ? selectedText.substring(0, 80) + '...' : selectedText;
+
+            overlay.innerHTML = `
+                <div class="annotation-dialog" onclick="event.stopPropagation()">
+                    <h4>添加批注</h4>
+                    <div class="selected-text-preview">${escapeHtml(previewText)}</div>
+                    <textarea id="outlineAnnotationInput" placeholder="请输入你对这段大纲的批注..." autofocus></textarea>
+                    <div class="annotation-dialog-actions">
+                        <button class="btn-cancel" onclick="cancelOutlineAnnotation()">取消</button>
+                        <button class="btn-save" onclick="saveOutlineAnnotation()">保存</button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(overlay);
+
+            setTimeout(() => {
+                const ta = document.getElementById('outlineAnnotationInput');
+                if (ta) ta.focus();
+            }, 50);
+        }
+
+        function saveOutlineAnnotation() {
+            const input = document.getElementById('outlineAnnotationInput');
+            const annotationText = input ? input.value.trim() : '';
+            if (!annotationText) {
+                showToast('批注内容不能为空', 'warn');
+                return;
+            }
+
+            outlineAnnotations.push({
+                selectedText: currentOutlineAnnotationText,
+                annotationText: annotationText
+            });
+
+            renderOutlineAnnotations();
+            window.getSelection().removeAllRanges();
+            showToast('批注已添加', 'success');
+            closeOutlineAnnotationDialog();
+        }
+
+        function cancelOutlineAnnotation() {
+            closeOutlineAnnotationDialog();
+        }
+
+        function closeOutlineAnnotationDialog() {
+            const overlay = document.querySelector('.annotation-dialog-overlay');
+            if (overlay) {
+                overlay.remove();
+            }
+            currentOutlineAnnotationText = null;
+        }
+
+        function renderOutlineAnnotations() {
+            const container = document.getElementById('outlineModalAnnotations');
+            if (!container) return;
+
+            container.innerHTML = '';
+
+            if (outlineAnnotations.length === 0) return;
+
+            outlineAnnotations.forEach((ann, index) => {
+                const badge = document.createElement('span');
+                badge.className = 'outline-annotation-badge';
+                const shortText = ann.selectedText.length > 20 ? ann.selectedText.substring(0, 20) + '...' : ann.selectedText;
+                badge.innerHTML = `
+                    <span>📌 ${escapeHtml(shortText)}</span>
+                    <span class="badge-delete" onclick="event.stopPropagation();removeOutlineAnnotation(${index})">✕</span>
+                `;
+                badge.title = `批注：${escapeHtml(ann.annotationText)}`;
+                container.appendChild(badge);
+            });
+        }
+
+        function removeOutlineAnnotation(index) {
+            if (confirm('删除这条批注？')) {
+                outlineAnnotations = outlineAnnotations.filter((_, i) => i !== index);
+                renderOutlineAnnotations();
+            }
+        }
+
+        // 修改大纲 - 发送批注给AI重新生成
+        async function modifyOutline() {
+            if (!currentSessionId) {
+                showToast('请先开始一个会话', 'warn');
+                return;
+            }
+
+            if (outlineAnnotations.length === 0) {
+                showToast('请先在大纲中添加批注', 'warn');
+                return;
+            }
+
+            // 构建包含批注和原大纲的消息
+            let message = '请根据以下批注修改小说大纲：\n\n';
+            outlineAnnotations.forEach((ann, idx) => {
+                message += `### 批注 ${idx + 1}\n`;
+                message += `- **原文**：${ann.selectedText}\n`;
+                message += `- **修改意见**：${ann.annotationText}\n\n`;
+            });
+            message += '**要求**：请保留未提及修改的部分，只针对批注内容进行修改。修改后请调用 `update_outline` 工具保存新大纲。';
+
+            // 先关闭模态框
+            closeOutlineModal();
+
+            // 清空批注
+            outlineAnnotations = [];
+
+            // 发送消息到聊天对话框
+            try {
+                await sendMessage(message);
+                showToast('已发送修改请求，请稍候...', 'info');
+            } catch (error) {
+                console.error('修改大纲失败:', error);
+                showToast('修改大纲失败', 'error');
+            }
+        }
     </script>
 
     <!-- 角色详情模态框 -->
@@ -5353,6 +6095,30 @@ let isStreaming = false;
             </div>
             <div class="character-modal-body" id="characterModalBody">
                 <!-- 动态内容 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 大纲查看模态框 -->
+    <div class="outline-modal-overlay" id="outlineModalOverlay" onclick="closeOutlineModalOnOverlay(event)">
+        <div class="outline-modal" onclick="event.stopPropagation()">
+            <div class="outline-modal-header">
+                <h3>📖 小说大纲</h3>
+                <button class="modal-close-btn" onclick="closeOutlineModal()">✕</button>
+            </div>
+            <div class="outline-modal-body" id="outlineModalBody">
+                <!-- 大纲内容将在这里渲染 -->
+            </div>
+            <div class="outline-modal-annotations" id="outlineModalAnnotations">
+                <!-- 批注徽章将在这里显示 -->
+            </div>
+            <div class="outline-modal-loading" id="outlineModalLoading" style="display:none;">
+                <div class="loading-bar"></div>
+                <span>正在重新生成大纲...</span>
+            </div>
+            <div class="outline-modal-footer">
+                <button class="btn-outline-close" onclick="closeOutlineModal()">关闭</button>
+                <button class="btn-outline-modify" onclick="modifyOutline()">修改</button>
             </div>
         </div>
     </div>

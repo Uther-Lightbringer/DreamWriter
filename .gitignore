@@ -4,6 +4,9 @@
 # Log files
 *.log
 
+# Chapter generation logs
+logs/chapter-generation/
+
 # BlueJ files
 *.ctxt
 

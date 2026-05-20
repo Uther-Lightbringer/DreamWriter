@@ -74,7 +74,9 @@ public class CreativeSessionService {
         Map.entry("show_examples", "展示示例"),
         Map.entry("generate_outline", "生成大纲"),
         Map.entry("update_outline", "更新大纲"),
-        Map.entry("get_material", "获取素材")
+        Map.entry("get_material", "获取素材"),
+        Map.entry("auto_generate_all", "一键生成完整方案"),
+        Map.entry("baidu_search", "百度搜索")
     );
 
     // 系统提示词（固定部分）
@@ -105,6 +107,12 @@ public class CreativeSessionService {
     @Autowired
     private MaterialService materialService;
 
+    @Autowired
+    private BaiduSearchService baiduSearchService;
+
+    @Autowired
+    private ChapterGenerationService chapterGenerationService;
+
     public CreativeSessionService(
             CreativeSessionRepository sessionRepository,
             CreativeMemoryRepository memoryRepository,
@@ -129,6 +137,9 @@ public class CreativeSessionService {
         private Long currentNovelId;
         private Long currentChapterId;
         private List<Long> createdCharacterIds = new ArrayList<>();
+        private List<Map<String, Object>> pendingCharacterCards = new ArrayList<>();
+        private Map<String, Object> pendingOutline = new LinkedHashMap<>();
+        private boolean schemeGenerated = false;
 
         public Long getCurrentNovelId() { return currentNovelId; }
         public void setCurrentNovelId(Long novelId) { this.currentNovelId = novelId; }
@@ -138,6 +149,15 @@ public class CreativeSessionService {
 
         public List<Long> getCreatedCharacterIds() { return createdCharacterIds; }
         public void addCharacterId(Long id) { this.createdCharacterIds.add(id); }
+
+        public List<Map<String, Object>> getPendingCharacterCards() { return pendingCharacterCards; }
+        public void setPendingCharacterCards(List<Map<String, Object>> cards) { this.pendingCharacterCards = cards; }
+
+        public Map<String, Object> getPendingOutline() { return pendingOutline; }
+        public void setPendingOutline(Map<String, Object> outline) { this.pendingOutline = outline; }
+
+        public boolean isSchemeGenerated() { return schemeGenerated; }
+        public void setSchemeGenerated(boolean generated) { this.schemeGenerated = generated; }
     }
 
     /**
@@ -287,10 +307,8 @@ public class CreativeSessionService {
         // 计算需要保留的最近消息数量
         int keepMessageCount = KEEP_RECENT_TURNS * 2;
 
-        // 获取最近的消息（不压缩）
-        List<Map<String, Object>> recentMessages = new ArrayList<>(
-            messages.subList(messages.size() - keepMessageCount, messages.size())
-        );
+        // 获取最近的消息（不压缩），确保 tool_calls/tool 消息配对完整
+        List<Map<String, Object>> recentMessages = extractRecentMessages(messages, keepMessageCount);
 
         // 构建状态摘要
         Map<String, Object> stateSummary = buildStateSummaryMessage(session, messages, recentMessages);
@@ -320,6 +338,51 @@ public class CreativeSessionService {
             "userTurnsBefore", userTurnsBefore,
             "userTurnsAfter", userTurnsAfter,
             "turnsCompressed", turnsCompressed
+        );
+    }
+
+    /**
+     * 修复会话中损坏的消息（孤立 tool 消息、不完整的 tool_calls 等）
+     */
+    @Transactional
+    public Map<String, Object> repairSession(String sessionId) {
+        CreativeSession session = getSession(sessionId);
+        List<Map<String, Object>> messages = parseMessages(session.getMessages());
+
+        int messagesBefore = messages.size();
+        logger.info("修复会话: sessionId={}, 修复前消息数={}", sessionId, messagesBefore);
+
+        // 记录修复前的消息角色分布
+        Map<String, Integer> roleCountBefore = new LinkedHashMap<>();
+        for (Map<String, Object> msg : messages) {
+            String role = (String) msg.get("role");
+            roleCountBefore.merge(role, 1, Integer::sum);
+        }
+
+        // 执行修复
+        repairMessages(messages);
+
+        int messagesAfter = messages.size();
+        Map<String, Integer> roleCountAfter = new LinkedHashMap<>();
+        for (Map<String, Object> msg : messages) {
+            String role = (String) msg.get("role");
+            roleCountAfter.merge(role, 1, Integer::sum);
+        }
+
+        // 保存修复后的消息
+        session.setMessages(toJson(messages));
+        sessionRepository.save(session);
+
+        logger.info("修复会话完成: sessionId={}, 修复前={}, 修复后={}", sessionId, messagesBefore, messagesAfter);
+
+        return Map.of(
+            "success", true,
+            "sessionId", sessionId,
+            "messagesBefore", messagesBefore,
+            "messagesAfter", messagesAfter,
+            "messagesRemoved", messagesBefore - messagesAfter,
+            "roleCountBefore", roleCountBefore,
+            "roleCountAfter", roleCountAfter
         );
     }
 
@@ -374,6 +437,9 @@ public class CreativeSessionService {
             sendError(emitter, "DeepSeek API Key 未配置");
             return;
         }
+
+        logger.info("[创作会话] 开始处理聊天请求: sessionId={}, contentLength={}, hasRuntimeConfig={}",
+            sessionId, content != null ? content.length() : 0, runtimeConfig != null);
 
         CreativeSession session = getSession(sessionId);
 
@@ -443,6 +509,9 @@ public class CreativeSessionService {
      */
     private void chatStream(List<Map<String, Object>> messages, SseEmitter emitter, CreativeSession session, DeepSeekRuntimeConfig config) {
         try {
+            // 发送前验证并修复消息，确保 tool/tool_calls 配对完整
+            repairMessages(messages);
+
             // 构建请求体
             Map<String, Object> requestBody = buildChatRequestBody(messages, config);
             String requestBodyStr = objectMapper.writeValueAsString(requestBody);
@@ -736,6 +805,8 @@ public class CreativeSessionService {
      * @param recursionDepth 当前递归深度，用于防止无限递归
      */
     private void continueAfterToolCalls(List<Map<String, Object>> messages, SseEmitter emitter, CreativeSession session, DeepSeekRuntimeConfig config, int recursionDepth) {
+        // 发送前验证并修复消息
+        repairMessages(messages);
         // 检查递归深度，防止栈溢出
         if (recursionDepth > MAX_TOOL_RECURSION_DEPTH) {
             logger.warn("工具调用递归深度超过限制: {}, 终止递归", recursionDepth);
@@ -998,7 +1069,8 @@ public class CreativeSessionService {
             String functionName = function != null ? (String) function.get("name") : "";
             String argumentsJson = function != null ? (String) function.get("arguments") : "{}";
 
-            logger.info("处理工具调用: {}({})", functionName, argumentsJson);
+            logger.info("[工具调用] 开始执行: {}({}), sessionId={}", functionName, argumentsJson,
+                session != null ? session.getSessionId() : "null");
 
             String result;
             boolean success = true;
@@ -1027,7 +1099,7 @@ public class CreativeSessionService {
                         result = createNovel(argumentsJson, session, messages);
                         break;
                     case "add_chapter":
-                        result = addChapter(argumentsJson, session, messages);
+                        result = addChapter(argumentsJson, session, messages, emitter);
                         break;
                     case "create_character_card":
                         result = createCharacterCard(argumentsJson, session, messages);
@@ -1064,6 +1136,12 @@ public class CreativeSessionService {
                         break;
                     case "get_material":
                         result = getMaterial(argumentsJson);
+                        break;
+                    case "auto_generate_all":
+                        result = autoGenerateAll(argumentsJson, session, messages);
+                        break;
+                    case "baidu_search":
+                        result = baiduSearch(argumentsJson);
                         break;
                     default:
                         result = "{\"error\": \"未知工具: " + functionName + "\"}";
@@ -1301,6 +1379,160 @@ public class CreativeSessionService {
         }
     }
 
+    /**
+     * 一键生成完整创作方案
+     * 基于对话中已收集的信息，自动生成小说参数、角色卡、章节大纲等完整设定
+     */
+    @Transactional
+    private String autoGenerateAll(String argumentsJson, CreativeSession session, List<Map<String, Object>> messages) {
+        try {
+            Map<String, Object> args = objectMapper.readValue(argumentsJson, new TypeReference<>() {});
+
+            // 提取 novelParams
+            Map<String, Object> novelParams = new LinkedHashMap<>();
+            Object npObj = args.get("novelParams");
+            if (npObj instanceof Map) {
+                novelParams.putAll((Map<String, Object>) npObj);
+            }
+
+            // 提取 characterCards
+            List<Map<String, Object>> characterCards = new ArrayList<>();
+            Object ccObj = args.get("characterCards");
+            if (ccObj instanceof List) {
+                characterCards.addAll((List<Map<String, Object>>) ccObj);
+            }
+
+            // 提取 outline
+            Map<String, Object> outline = new LinkedHashMap<>();
+            Object olObj = args.get("outline");
+            if (olObj instanceof Map) {
+                outline.putAll((Map<String, Object>) olObj);
+            }
+
+            // 提取 summary
+            String summary = args.get("summary") != null ? (String) args.get("summary") : "";
+
+            // 合并到现有参数
+            Map<String, Object> existingParams = parseParams(session.getExtractedParams());
+            for (Map.Entry<String, Object> entry : novelParams.entrySet()) {
+                if (entry.getValue() != null) {
+                    existingParams.put(entry.getKey(), entry.getValue());
+                }
+            }
+            session.setExtractedParams(toJson(existingParams));
+
+            // 保存角色卡信息到会话上下文（供后续 create_character_card 使用）
+            SessionContext context = getContext(session);
+            if (!characterCards.isEmpty()) {
+                context.setPendingCharacterCards(characterCards);
+            }
+
+            // 保存大纲信息到会话上下文（供后续 generate_outline 使用）
+            if (!outline.isEmpty()) {
+                context.setPendingOutline(outline);
+            }
+
+            sessionRepository.save(session);
+
+            // 构建返回结果
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("success", true);
+            result.put("summary", summary);
+
+            // 参数摘要
+            Map<String, String> paramSummary = new LinkedHashMap<>();
+            paramSummary.put("题材", novelParams.get("theme") != null ? (String) novelParams.get("theme") : "未设定");
+            paramSummary.put("风格", novelParams.get("style") != null ? (String) novelParams.get("style") : "未设定");
+            paramSummary.put("主角", novelParams.get("protagonistName") != null ? (String) novelParams.get("protagonistName") : "未设定");
+            paramSummary.put("主线", novelParams.get("mainPlot") != null ? (String) novelParams.get("mainPlot") : "未设定");
+            paramSummary.put("章节数", novelParams.get("chapterCount") != null ? String.valueOf(novelParams.get("chapterCount")) : "未设定");
+            result.put("paramSummary", paramSummary);
+
+            // 角色卡数量
+            result.put("characterCount", characterCards.size());
+
+            // 大纲章节数
+            Object chaptersObj = outline.get("chapters");
+            int chapterCount = chaptersObj instanceof List ? ((List<?>) chaptersObj).size() : 0;
+            result.put("outlineChapterCount", chapterCount);
+
+            // 标记方案已生成，等待用户确认
+            context.setSchemeGenerated(true);
+            sessionRepository.save(session);
+
+            logger.info("一键生成完整方案: 题材={}, 主角={}, 角色数={}, 大纲章节数={}",
+                novelParams.get("theme"), novelParams.get("protagonistName"),
+                characterCards.size(), chapterCount);
+
+            return objectMapper.writeValueAsString(result);
+        } catch (Exception e) {
+            logger.error("一键生成方案失败: {}", e.getMessage(), e);
+            return "{\"error\": \"" + escapeJson(e.getMessage()) + "\"}";
+        }
+    }
+
+    /**
+     * 百度搜索工具实现
+     * 调用百度搜索API获取实时素材和创作灵感
+     */
+    private String baiduSearch(String argumentsJson) {
+        try {
+            Map<String, Object> args = objectMapper.readValue(argumentsJson, new TypeReference<>() {});
+            String query = (String) args.get("query");
+            Integer count = args.get("count") != null ? (Integer) args.get("count") : 10;
+            String freshness = (String) args.get("freshness");
+
+            if (query == null || query.trim().isEmpty()) {
+                return "{\"error\": \"搜索关键词不能为空\"}";
+            }
+
+            if (!baiduSearchService.isAvailable()) {
+                return objectMapper.writeValueAsString(Map.of(
+                    "success", false,
+                    "error", "百度搜索API未配置（需设置BAIDU_API_KEY环境变量）",
+                    "errorCode", "SEARCH_UNAVAILABLE"
+                ));
+            }
+
+            logger.info("百度搜索: query={}, count={}, freshness={}", query, count, freshness);
+
+            List<BaiduSearchService.SearchResult> results = baiduSearchService.search(query, count, freshness);
+
+            if (results.isEmpty()) {
+                return objectMapper.writeValueAsString(Map.of(
+                    "success", true,
+                    "query", query,
+                    "count", 0,
+                    "message", "未找到相关结果"
+                ));
+            }
+
+            // 构建返回结果
+            List<Map<String, String>> simplifiedResults = results.stream()
+                .limit(count)
+                .map(r -> {
+                    Map<String, String> item = new LinkedHashMap<>();
+                    item.put("title", r.getTitle());
+                    item.put("url", r.getUrl());
+                    item.put("abstract", r.getAbstractText());
+                    if (r.getSiteName() != null) item.put("site", r.getSiteName());
+                    if (r.getPublishTime() != null) item.put("time", r.getPublishTime());
+                    return item;
+                })
+                .toList();
+
+            return objectMapper.writeValueAsString(Map.of(
+                "success", true,
+                "query", query,
+                "count", simplifiedResults.size(),
+                "results", simplifiedResults
+            ));
+        } catch (Exception e) {
+            logger.error("百度搜索失败: {}", e.getMessage(), e);
+            return "{\"error\": \"" + escapeJson(e.getMessage()) + "\"}";
+        }
+    }
+
     // ==================== 新增创作工具实现 ====================
 
     /**
@@ -1353,9 +1585,10 @@ public class CreativeSessionService {
     }
 
     /**
-     * 添加章节工具实现
+     * 添加章节工具实现（子Agent模式）
+     * 只传入标题+概括，由 ChapterGenerationService 异步生成完整内容
      */
-    private String addChapter(String argumentsJson, CreativeSession session, List<Map<String, Object>> messages) {
+    private String addChapter(String argumentsJson, CreativeSession session, List<Map<String, Object>> messages, SseEmitter emitter) {
         try {
             Map<String, Object> args = objectMapper.readValue(argumentsJson, new TypeReference<>() {});
 
@@ -1382,36 +1615,32 @@ public class CreativeSessionService {
             // ===== 检查结束 =====
 
             String title = (String) args.get("title");
-            String content = (String) args.get("content");
+            String summary = (String) args.get("summary");
 
             if (title == null || title.trim().isEmpty()) {
                 return "{\"error\": \"章节标题不能为空\"}";
             }
-            if (content == null || content.trim().isEmpty()) {
-                return "{\"error\": \"章节内容不能为空\"}";
+            if (summary == null || summary.trim().isEmpty()) {
+                return "{\"error\": \"章节概括不能为空，系统需要概括来生成章节内容\"}";
             }
 
-            // 获取章节概括
-            String summary = (String) args.get("summary");
+            // 启动异步生成
+            String taskId = chapterGenerationService.startGeneration(
+                novelId, title.trim(), summary.trim(),
+                emitter, session.getSessionId(), session.getExtractedParams()
+            );
 
-            // 调用 NovelService 添加章节
-            Chapter chapter = novelService.createChapter(novelId, title.trim(), content.trim(), null, summary);
-
-            // 更新上下文
-            context.setCurrentChapterId(chapter.getId());
-            updateContext(session, context);
-
-            logger.info("添加章节成功: novelId={}, chapterId={}, title={}", novelId, chapter.getId(), title);
+            logger.info("启动章节异步生成: novelId={}, title={}, taskId={}", novelId, title, taskId);
 
             return objectMapper.writeValueAsString(Map.of(
                 "success", true,
-                "chapterId", chapter.getId(),
-                "title", title,
-                "wordCount", content.length()
+                "taskId", taskId,
+                "status", "generating",
+                "message", "章节正在后台生成中，完成后将自动保存并通知"
             ));
         } catch (Exception e) {
             logger.error("添加章节失败: {}", e.getMessage(), e);
-            return "{\"error\": \"" + e.getMessage() + "\"}";
+            return "{\"error\": \"" + escapeJson(e.getMessage()) + "\"}";
         }
     }
 
@@ -1488,6 +1717,11 @@ public class CreativeSessionService {
 
             if (novelId == null) {
                 return "{\"error\": \"请先创建小说\", \"errorCode\": \"NO_NOVEL\"}";
+            }
+
+            // 校验小说是否存在
+            if (!novelService.existsById(novelId)) {
+                return "{\"error\": \"小说 ID " + novelId + " 不存在，请先创建小说\", \"errorCode\": \"NO_NOVEL\"}";
             }
 
             String name = (String) args.get("name");
@@ -2328,7 +2562,10 @@ public class CreativeSessionService {
                 ? ((Number) args.get("novelId")).longValue()
                 : context.getCurrentNovelId();
 
+            logger.info("[大纲生成] 开始生成大纲, sessionId={}, novelId={}", session.getSessionId(), novelId);
+
             if (novelId == null) {
+                logger.warn("[大纲生成] 未指定小说ID, sessionId={}", session.getSessionId());
                 return "{\"error\": \"请先创建小说\", \"errorCode\": \"NO_NOVEL\"}";
             }
 
@@ -2336,15 +2573,19 @@ public class CreativeSessionService {
             Novel novel = novelService.getNovelById(novelId);
             Map<String, Object> params = parseParams(session.getExtractedParams());
 
+            logger.info("[大纲生成] 小说参数: novelId={}, title={}, params={}", novelId,
+                novel.getTitle(), params.keySet());
+
             // 构建大纲生成提示词
             String outlinePrompt = buildOutlinePrompt(params, novel);
 
             // 调用 AI 生成大纲
+            logger.info("[大纲生成] 调用 DeepSeek API 生成大纲, novelId={}", novelId);
             String outline = callDeepSeekForOutline(outlinePrompt);
 
             // 检查是否生成成功
             if (outline == null || outline.isEmpty() || outline.equals("大纲生成失败")) {
-                logger.error("AI生成大纲失败: novelId={}", novelId);
+                logger.error("[大纲生成] AI生成大纲失败: novelId={}, 返回内容为空", novelId);
                 return objectMapper.writeValueAsString(Map.of(
                     "success", false,
                     "error", "AI生成大纲失败，请重试",
@@ -2356,14 +2597,14 @@ public class CreativeSessionService {
             novel.setOutline(outline);
             novelService.updateNovel(novel);
 
-            logger.info("生成大纲成功: novelId={}", novelId);
+            logger.info("[大纲生成] 大纲生成并保存成功: novelId={}, outlineLength={}", novelId, outline.length());
 
             return objectMapper.writeValueAsString(Map.of(
                 "success", true,
                 "outline", outline
             ));
         } catch (Exception e) {
-            logger.error("生成大纲失败: {}", e.getMessage(), e);
+            logger.error("[大纲生成] 生成大纲异常: sessionId={}, error={}", session.getSessionId(), e.getMessage(), e);
             return "{\"error\": \"" + e.getMessage() + "\"}";
         }
     }
@@ -2427,27 +2668,31 @@ public class CreativeSessionService {
                 : context.getCurrentNovelId();
 
             if (novelId == null) {
+                logger.warn("[大纲更新] 未指定小说ID, sessionId={}", session.getSessionId());
                 return "{\"error\": \"请先创建小说\", \"errorCode\": \"NO_NOVEL\"}";
             }
 
             String outline = (String) args.get("outline");
             if (outline == null || outline.trim().isEmpty()) {
+                logger.warn("[大纲更新] 大纲内容为空, novelId={}", novelId);
                 return "{\"error\": \"大纲内容不能为空\"}";
             }
+
+            logger.info("[大纲更新] 开始更新大纲, novelId={}, outlineLength={}", novelId, outline.length());
 
             // 更新大纲
             Novel novel = novelService.getNovelById(novelId);
             novel.setOutline(outline.trim());
             novelService.updateNovel(novel);
 
-            logger.info("更新大纲成功: novelId={}", novelId);
+            logger.info("[大纲更新] 大纲更新成功: novelId={}, title={}", novelId, novel.getTitle());
 
             return objectMapper.writeValueAsString(Map.of(
                 "success", true,
                 "message", "大纲更新成功"
             ));
         } catch (Exception e) {
-            logger.error("更新大纲失败: {}", e.getMessage(), e);
+            logger.error("[大纲更新] 更新大纲异常: sessionId={}, error={}", session.getSessionId(), e.getMessage(), e);
             return "{\"error\": \"" + e.getMessage() + "\"}";
         }
     }
@@ -2550,6 +2795,235 @@ public class CreativeSessionService {
     /**
      * 构建状态摘要消息（从数据库获取真实数据）
      */
+    /**
+     * 从消息列表中提取最近的指定数量的消息，确保 tool_calls/tool 消息配对完整。
+     * 如果切割点落在 tool 消息上（对应的 assistant+tool_calls 在切割点之前），
+     * 则向前扩展切割点以包含该 assistant 消息；
+     * 如果切割点落在 assistant+tool_calls 消息和对应的 tool 消息之间，
+     * 也向前扩展以保持配对完整。
+     * 最后还会清理掉任何孤立的 tool 消息。
+     */
+    /**
+     * 在发送 API 请求前验证并修复消息列表，确保 tool/tool_calls 配对完整。
+     * 1. 收集所有 assistant+tool_calls 中的 tool_call_id
+     * 2. 移除没有对应 tool_calls 的孤立 tool 消息
+     * 3. 清理没有对应 tool 响应的 assistant+tool_calls
+     * 4. 确保消息序列角色合法（不能连续两个 assistant 等）
+     */
+    private void repairMessages(List<Map<String, Object>> messages) {
+        if (messages == null || messages.isEmpty()) return;
+
+        // 第一步：收集所有 assistant+tool_calls 中的 tool_call_id
+        Set<String> definedToolCallIds = new LinkedHashSet<>();
+        for (Map<String, Object> msg : messages) {
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null) {
+                    for (Map<String, Object> tc : toolCalls) {
+                        String id = (String) tc.get("id");
+                        if (id != null && !id.isEmpty()) {
+                            definedToolCallIds.add(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 第二步：移除没有对应 tool_calls 的孤立 tool 消息
+        int removedTools = 0;
+        Iterator<Map<String, Object>> it = messages.iterator();
+        while (it.hasNext()) {
+            Map<String, Object> msg = it.next();
+            if ("tool".equals(msg.get("role"))) {
+                String toolCallId = (String) msg.get("tool_call_id");
+                if (toolCallId == null || !definedToolCallIds.contains(toolCallId)) {
+                    logger.warn("修复消息：移除孤立 tool 消息, tool_call_id={}", toolCallId);
+                    it.remove();
+                    removedTools++;
+                }
+            }
+        }
+
+        // 第三步：收集所有有响应的 tool_call_id
+        Set<String> respondedToolCallIds = new HashSet<>();
+        for (Map<String, Object> msg : messages) {
+            if ("tool".equals(msg.get("role"))) {
+                String toolCallId = (String) msg.get("tool_call_id");
+                if (toolCallId != null) {
+                    respondedToolCallIds.add(toolCallId);
+                }
+            }
+        }
+
+        // 第四步：清理没有对应 tool 响应的 assistant+tool_calls
+        for (Map<String, Object> msg : messages) {
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null && !toolCalls.isEmpty()) {
+                    boolean hasAnyResponse = toolCalls.stream()
+                        .anyMatch(tc -> respondedToolCallIds.contains(tc.get("id")));
+                    if (!hasAnyResponse) {
+                        logger.warn("修复消息：移除无响应的 tool_calls 字段");
+                        msg.remove("tool_calls");
+                    } else {
+                        toolCalls.removeIf(tc -> !respondedToolCallIds.contains(tc.get("id")));
+                    }
+                }
+            }
+        }
+
+        // 第五步：确保消息序列合法 - tool 消息必须紧跟在带 tool_calls 的 assistant 消息之后
+        // 如果 tool 消息和其对应的 assistant 消息之间被其他消息隔开，需要重排
+        // 收集 assistant+tool_calls 的索引及其对应 tool 消息的索引
+        List<Integer> toRemove = new ArrayList<>();
+        Set<String> seenToolCallIds = new HashSet<>();
+        for (int i = 0; i < messages.size(); i++) {
+            Map<String, Object> msg = messages.get(i);
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null && !toolCalls.isEmpty()) {
+                    for (Map<String, Object> tc : toolCalls) {
+                        seenToolCallIds.add((String) tc.get("id"));
+                    }
+                    // 检查紧跟的下一条消息是否是 tool 消息
+                    if (i + 1 < messages.size()) {
+                        Map<String, Object> nextMsg = messages.get(i + 1);
+                        if (!"tool".equals(nextMsg.get("role"))) {
+                            logger.warn("修复消息：assistant+tool_calls 后未紧跟 tool 消息，移除 tool_calls");
+                            msg.remove("tool_calls");
+                        }
+                    } else {
+                        // assistant+tool_calls 是最后一条消息，没有 tool 响应
+                        logger.warn("修复消息：assistant+tool_calls 是最后一条消息，移除 tool_calls");
+                        msg.remove("tool_calls");
+                    }
+                }
+            }
+        }
+
+        // 第六步：重新验证 - 再次检查是否还有孤立 tool 消息
+        definedToolCallIds.clear();
+        for (Map<String, Object> msg : messages) {
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null) {
+                    for (Map<String, Object> tc : toolCalls) {
+                        String id = (String) tc.get("id");
+                        if (id != null) definedToolCallIds.add(id);
+                    }
+                }
+            }
+        }
+        Iterator<Map<String, Object>> it2 = messages.iterator();
+        while (it2.hasNext()) {
+            Map<String, Object> msg = it2.next();
+            if ("tool".equals(msg.get("role"))) {
+                String toolCallId = (String) msg.get("tool_call_id");
+                if (toolCallId == null || !definedToolCallIds.contains(toolCallId)) {
+                    logger.warn("修复消息（二次检查）：移除孤立 tool 消息, tool_call_id={}", toolCallId);
+                    it2.remove();
+                    removedTools++;
+                }
+            }
+        }
+
+        if (removedTools > 0) {
+            logger.info("消息修复完成：共移除 {} 条孤立 tool 消息", removedTools);
+        }
+    }
+
+    private List<Map<String, Object>> extractRecentMessages(List<Map<String, Object>> messages, int keepMessageCount) {
+        int startIndex = messages.size() - keepMessageCount;
+
+        // 向前调整切割点，确保不在 tool_calls/tool 配对中间切割
+        // 如果切割点落在 tool 消息上，需要向前找到对应的 assistant+tool_calls 消息
+        if (startIndex > 0) {
+            String startRole = (String) messages.get(startIndex).get("role");
+            if ("tool".equals(startRole)) {
+                // 向前查找对应的 assistant 消息（带 tool_calls）
+                String toolCallId = (String) messages.get(startIndex).get("tool_call_id");
+                for (int i = startIndex - 1; i >= 1; i--) {
+                    Map<String, Object> msg = messages.get(i);
+                    if ("assistant".equals(msg.get("role"))) {
+                        List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                        if (toolCalls != null) {
+                            // 检查这个 assistant 消息是否包含对应的 tool_call_id
+                            for (Map<String, Object> tc : toolCalls) {
+                                if (toolCallId != null && toolCallId.equals(tc.get("id"))) {
+                                    startIndex = i;
+                                    break;
+                                }
+                            }
+                        }
+                        break; // assistant 消息只找最近的一个
+                    } else if ("tool".equals(msg.get("role"))) {
+                        continue; // 跳过其他 tool 消息
+                    } else {
+                        break; // 遇到 user 消息，停止
+                    }
+                }
+            }
+        }
+
+        List<Map<String, Object>> recentMessages = new ArrayList<>(messages.subList(startIndex, messages.size()));
+
+        // 清理孤立的 tool 消息：检查每个 tool 消息前面是否有对应的 assistant+tool_calls
+        Set<String> availableToolCallIds = new HashSet<>();
+        for (int i = 0; i < recentMessages.size(); i++) {
+            Map<String, Object> msg = recentMessages.get(i);
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null) {
+                    for (Map<String, Object> tc : toolCalls) {
+                        String id = (String) tc.get("id");
+                        if (id != null) {
+                            availableToolCallIds.add(id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 移除没有对应 tool_calls 的 tool 消息
+        recentMessages.removeIf(msg -> {
+            if ("tool".equals(msg.get("role"))) {
+                String toolCallId = (String) msg.get("tool_call_id");
+                return toolCallId == null || !availableToolCallIds.contains(toolCallId);
+            }
+            return false;
+        });
+
+        // 清理没有对应 tool 响应的 assistant+tool_calls 消息中的 tool_calls
+        Set<String> respondedToolCallIds = new HashSet<>();
+        for (Map<String, Object> msg : recentMessages) {
+            if ("tool".equals(msg.get("role"))) {
+                String toolCallId = (String) msg.get("tool_call_id");
+                if (toolCallId != null) {
+                    respondedToolCallIds.add(toolCallId);
+                }
+            }
+        }
+        for (Map<String, Object> msg : recentMessages) {
+            if ("assistant".equals(msg.get("role"))) {
+                List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) msg.get("tool_calls");
+                if (toolCalls != null && !toolCalls.isEmpty()) {
+                    // 如果没有任何 tool_call 得到响应，移除整个 tool_calls 字段
+                    boolean hasAnyResponse = toolCalls.stream()
+                        .anyMatch(tc -> respondedToolCallIds.contains(tc.get("id")));
+                    if (!hasAnyResponse) {
+                        msg.remove("tool_calls");
+                    } else {
+                        // 只保留有响应的 tool_calls
+                        toolCalls.removeIf(tc -> !respondedToolCallIds.contains(tc.get("id")));
+                    }
+                }
+            }
+        }
+
+        logger.info("提取最近消息: startIndex={}, 实际保留消息数={}", startIndex, recentMessages.size());
+        return recentMessages;
+    }
+
     private Map<String, Object> buildStateSummaryMessage(CreativeSession session, List<Map<String, Object>> allMessages, List<Map<String, Object>> recentMessages) {
         StringBuilder content = new StringBuilder();
         content.append("[创作状态摘要]\n\n");
@@ -2817,10 +3291,10 @@ public class CreativeSessionService {
             // 计算需要保留的最近消息数量（5轮对话 = 10条消息）
             int keepMessageCount = KEEP_RECENT_TURNS * 2;
 
-            // 获取最近的消息（不压缩）
+            // 获取最近的消息（不压缩），确保 tool_calls/tool 消息配对完整
             List<Map<String, Object>> recentMessages = new ArrayList<>();
             if (messages.size() > keepMessageCount) {
-                recentMessages = new ArrayList<>(messages.subList(messages.size() - keepMessageCount, messages.size()));
+                recentMessages = extractRecentMessages(messages, keepMessageCount);
             } else {
                 // 消息数量不足，不进行压缩
                 logger.info("消息数量不足，跳过压缩: {} <= {}", messages.size(), keepMessageCount);
@@ -2866,6 +3340,8 @@ public class CreativeSessionService {
      */
     private String callDeepSeekForOutline(String prompt) {
         try {
+            logger.info("[大纲AI调用] 开始调用 DeepSeek API 生成大纲, promptLength={}", prompt.length());
+
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.set("Authorization", "Bearer " + deepSeekConfig.getApiKey());
@@ -2880,6 +3356,8 @@ public class CreativeSessionService {
 
             String requestBodyStr = objectMapper.writeValueAsString(requestBody);
 
+            logger.info("[大纲AI调用] 发送请求到 DeepSeek API, model={}", deepSeekConfig.getModel());
+
             String response = restTemplate.execute(
                     deepSeekConfig.getApiUrl(),
                     org.springframework.http.HttpMethod.POST,
@@ -2893,15 +3371,18 @@ public class CreativeSessionService {
                         JsonNode jsonNode = objectMapper.readTree(body);
                         JsonNode choices = jsonNode.path("choices");
                         if (choices.isArray() && choices.size() > 0) {
-                            return choices.get(0).path("message").path("content").asText();
+                            String result = choices.get(0).path("message").path("content").asText();
+                            logger.info("[大纲AI调用] DeepSeek API 响应成功, responseLength={}", result.length());
+                            return result;
                         }
+                        logger.warn("[大纲AI调用] DeepSeek API 响应无有效内容: {}", body);
                         return "大纲生成失败";
                     }
             );
 
             return response != null ? response : "大纲生成失败";
         } catch (Exception e) {
-            logger.error("调用 DeepSeek 生成大纲失败: {}", e.getMessage());
+            logger.error("[大纲AI调用] 调用 DeepSeek API 异常: {}", e.getMessage(), e);
             return "大纲生成失败";
         }
     }
@@ -3153,14 +3634,13 @@ public class CreativeSessionService {
         createNovelProps.put("title", Map.of("type", "string", "description", "小说标题"));
         tools.add(createTool("create_novel", "创建一部新小说。当用户明确提供小说标题时调用。", createNovelProps, Arrays.asList("title")));
 
-        // add_chapter 工具
+        // add_chapter 工具（子Agent模式：只传标题+概括，异步生成内容）
         Map<String, Object> addChapterProps = new LinkedHashMap<>();
         addChapterProps.put("novelId", Map.of("type", "integer", "description", "小说ID，不填则使用当前会话的小说"));
         addChapterProps.put("title", Map.of("type", "string", "description", "章节标题"));
-        addChapterProps.put("content", Map.of("type", "string", "description", "章节内容"));
+        addChapterProps.put("summary", Map.of("type", "string", "description", "章节概括（100-200字），描述本章的核心剧情、内容走向和写作要求。用户的个性化写作要求也写在这里"));
         addChapterProps.put("afterChapterId", Map.of("type", "integer", "description", "插入到指定章节之后"));
-        addChapterProps.put("summary", Map.of("type", "string", "description", "章节概括（100-200字），用于后续章节参考剧情进度"));
-        tools.add(createTool("add_chapter", "为小说添加新章节。需要先创建小说。调用前必须先向用户确认。先询问用户“目前条件已经具备，是否需要我来创建新的章节？”", addChapterProps, Arrays.asList("title", "content")));
+        tools.add(createTool("add_chapter", "启动章节异步生成任务。提供标题和概括，系统将在后台自动生成完整的章节内容。需要先创建小说且主角角色卡已存在。调用前必须先向用户确认。", addChapterProps, Arrays.asList("title", "summary")));
 
         // update_chapter 工具
         Map<String, Object> updateChapterProps = new LinkedHashMap<>();
@@ -3309,6 +3789,79 @@ public class CreativeSessionService {
         getMaterialProps.put("detail", Map.of("type", "string", "description", "更具体的描述，用于更精确的素材匹配"));
         tools.add(createTool("get_material", "获取创作素材库中的相关素材。当需要描写人物外貌、情感、服饰、风景、打斗等场景时调用。按需加载，不会一次性读取所有素材。", getMaterialProps, Arrays.asList("scene")));
 
+        // auto_generate_all 工具 - 一键生成完整创作方案
+        Map<String, Object> autoGenAllProps = new LinkedHashMap<>();
+
+        // novelParams 嵌套对象
+        Map<String, Object> novelParamsProps = new LinkedHashMap<>();
+        novelParamsProps.put("theme", Map.of("type", "string", "description", "题材"));
+        novelParamsProps.put("style", Map.of("type", "string", "description", "风格"));
+        novelParamsProps.put("protagonistName", Map.of("type", "string", "description", "主角姓名"));
+        novelParamsProps.put("protagonistGender", Map.of("type", "string", "description", "主角性别"));
+        novelParamsProps.put("protagonistIdentity", Map.of("type", "string", "description", "主角身份"));
+        novelParamsProps.put("protagonistAge", Map.of("type", "string", "description", "主角年龄"));
+        novelParamsProps.put("mainPlot", Map.of("type", "string", "description", "故事主线"));
+        novelParamsProps.put("conflictType", Map.of("type", "string", "description", "核心冲突"));
+        novelParamsProps.put("endingType", Map.of("type", "string", "description", "结局类型"));
+        novelParamsProps.put("chapterCount", Map.of("type", "integer", "description", "章节数量"));
+        novelParamsProps.put("wordsPerChapter", Map.of("type", "integer", "description", "每章字数"));
+        novelParamsProps.put("pointOfView", Map.of("type", "string", "description", "叙述视角"));
+        novelParamsProps.put("languageStyle", Map.of("type", "string", "description", "语言风格"));
+        Map<String, Object> novelParamsObj = new LinkedHashMap<>();
+        novelParamsObj.put("type", "object");
+        novelParamsObj.put("description", "小说生成参数，包含题材、风格、主角设定、故事主线等完整信息");
+        novelParamsObj.put("properties", novelParamsProps);
+        novelParamsObj.put("required", Arrays.asList("theme", "style", "protagonistName", "protagonistGender", "mainPlot"));
+        autoGenAllProps.put("novelParams", novelParamsObj);
+
+        // characterCards 数组
+        Map<String, Object> charCardItemProps = new LinkedHashMap<>();
+        charCardItemProps.put("name", Map.of("type", "string", "description", "角色姓名"));
+        charCardItemProps.put("gender", Map.of("type", "string", "description", "性别"));
+        charCardItemProps.put("age", Map.of("type", "string", "description", "年龄"));
+        charCardItemProps.put("identity", Map.of("type", "string", "description", "身份/职业"));
+        charCardItemProps.put("personality", Map.of("type", "string", "description", "性格特点"));
+        charCardItemProps.put("background", Map.of("type", "string", "description", "背景故事"));
+        charCardItemProps.put("role", Map.of("type", "string", "description", "角色定位：protagonist(主角)/supporting(配角)/antagonist(反派)"));
+        Map<String, Object> charCardItemObj = new LinkedHashMap<>();
+        charCardItemObj.put("type", "object");
+        charCardItemObj.put("properties", charCardItemProps);
+        charCardItemObj.put("required", Arrays.asList("name", "role"));
+        Map<String, Object> characterCardsObj = new LinkedHashMap<>();
+        characterCardsObj.put("type", "array");
+        characterCardsObj.put("description", "角色卡列表，包含主角和主要配角的详细设定");
+        characterCardsObj.put("items", charCardItemObj);
+        autoGenAllProps.put("characterCards", characterCardsObj);
+
+        // outline 嵌套对象
+        Map<String, Object> chapterItemProps = new LinkedHashMap<>();
+        chapterItemProps.put("chapterNumber", Map.of("type", "integer", "description", "章节序号"));
+        chapterItemProps.put("title", Map.of("type", "string", "description", "章节标题"));
+        chapterItemProps.put("summary", Map.of("type", "string", "description", "章节概要（50-100字）"));
+        Map<String, Object> chapterItemObj = new LinkedHashMap<>();
+        chapterItemObj.put("type", "object");
+        chapterItemObj.put("properties", chapterItemProps);
+        chapterItemObj.put("required", Arrays.asList("chapterNumber", "title", "summary"));
+        Map<String, Object> outlineProps = new LinkedHashMap<>();
+        outlineProps.put("chapters", Map.of("type", "array", "description", "章节大纲列表", "items", chapterItemObj));
+        Map<String, Object> outlineObj = new LinkedHashMap<>();
+        outlineObj.put("type", "object");
+        outlineObj.put("description", "章节大纲，包含每章的标题和概要");
+        outlineObj.put("properties", outlineProps);
+        autoGenAllProps.put("outline", outlineObj);
+
+        // summary 字段
+        autoGenAllProps.put("summary", Map.of("type", "string", "description", "AI对创作方案的总结说明，包括亮点、特色和创作建议"));
+
+        tools.add(createTool("auto_generate_all", "一键生成完整创作方案。当用户要求生成完整方案、参数收集足够完整时调用。AI基于对话中已收集的信息，自动生成小说参数、角色卡、章节大纲等完整设定。对于用户未明确提及的参数，基于已有信息智能推断默认值。生成后等待用户确认再执行实际创建。", autoGenAllProps, Arrays.asList("novelParams", "summary")));
+
+        // baidu_search 工具 - 百度搜索实时素材
+        Map<String, Object> baiduSearchProps = new LinkedHashMap<>();
+        baiduSearchProps.put("query", Map.of("type", "string", "description", "搜索关键词，描述需要搜索的内容"));
+        baiduSearchProps.put("count", Map.of("type", "integer", "description", "返回结果数量，默认10，最多50"));
+        baiduSearchProps.put("freshness", Map.of("type", "string", "description", "时间范围：pd(24小时)/pw(7天)/pm(31天)/py(365天)"));
+        tools.add(createTool("baidu_search", "使用百度搜索获取实时素材和灵感。当需要搜索现实世界的信息（如地名、职业、历史背景、风俗习惯、专业知识等）时调用。返回搜索结果标题、摘要和链接。", baiduSearchProps, Arrays.asList("query")));
+
         return tools;
     }
 
@@ -3419,6 +3972,51 @@ public class CreativeSessionService {
             ```
 
             **重要**：用户确认创建角色卡后，立即调用 `create_character_card` 工具。
+
+            ## 一键生成完整方案
+
+            当以下条件满足时，主动调用 `auto_generate_all` 工具生成完整创作方案：
+
+            ### 触发条件
+            - 题材、风格、主角姓名、主角性别、故事主线已确认
+            - 章节数量已确认或可推断
+            - 用户表达了"开始创作"、"生成方案"、"够了"等意图
+
+            ### 智能推断规则
+            对于用户未明确提及的参数，基于已有信息推断：
+            - 章节数：根据故事复杂度推断，简单故事 8-10 章，复杂故事 15-20 章
+            - 每章字数：默认 3000 字
+            - 叙述视角：根据题材推断（古代→第三人称全知，现代→可第一或第三人称）
+            - 结局类型：根据风格推断（甜蜜温馨→圆满结局，虐心→开放式或悲剧）
+            - 核心冲突：根据主线推断
+
+            ### 生成内容
+            `auto_generate_all` 工具会生成：
+            1. **小说参数**（novelParams）：完整的题材、风格、主角设定、故事主线等
+            2. **角色卡列表**（characterCards）：基于对话中创建的角色卡或描述
+            3. **章节大纲**（outline）：根据故事主线生成每章标题和概要
+            4. **方案总结**（summary）：AI 对方案的亮点说明和创作建议
+
+            ### 生成后的流程
+            1. 工具调用后，向用户展示生成的完整方案
+            2. 询问用户是否满意，是否需要调整
+            3. 用户确认后，可继续调用 `create_novel` 实际创建小说
+
+            示例：
+            ```
+            好的，我已经收集了足够的信息！让我为你生成完整的创作方案。
+            （调用 auto_generate_all 工具）
+            方案已生成！你的小说设定如下：
+            - 题材：古代宫廷
+            - 主角：沈清婉（女），宫廷女官
+            - 故事：一个关于权谋与爱情的宫廷故事
+            - 章节：12章，每章3000字
+            - 角色卡：3个
+            - 大纲：12章详细概要已生成
+
+            你对这个方案满意吗？需要调整什么吗？
+            [OPTIONS:confirmScheme:确认方案]满意，开始创建|调整参数|重新生成[/OPTIONS]
+            ```
 
             ## 参数更新规则
 
@@ -3542,7 +4140,7 @@ public class CreativeSessionService {
             当用户明确要求创建小说、添加章节、创建角色卡或生成图片时，调用相应的工具：
 
             - create_novel：创建小说（需要先询问标题）
-            - add_chapter：添加章节（需要小说已创建，**调用前必须向用户确认**）
+            - add_chapter：异步生成章节（提供标题+概括，系统自动生成完整内容，需要小说已创建且主角卡存在，**调用前必须向用户确认**）
             - update_chapter：修改章节（**调用前必须向用户确认**）
             - update_novel：修改小说世界观/概述
             - create_character_card：创建角色卡（需要小说已创建，**必须填写完整外貌字段**）
@@ -3554,6 +4152,24 @@ public class CreativeSessionService {
             - generate_outline：生成小说大纲（需要小说已创建）
             - update_outline：更新小说大纲
             - get_material：获取创作素材（按需加载，根据场景关键词获取相关描写素材）
+            - baidu_search：百度搜索（搜索现实世界的信息，如地名、职业、历史背景、风俗习惯等）
+            - auto_generate_all：一键生成完整方案（参数足够时自动生成小说参数、角色卡、大纲）
+
+            ## 百度搜索
+
+            当创作中需要获取现实世界的真实信息时，调用 `baidu_search` 工具：
+
+            **使用场景**：
+            - 用户提到具体的地名、景点，需要了解当地特色
+            - 用户设定了特定职业（如医生、律师、警察），需要了解职业细节
+            - 用户想要描写历史背景、古代风俗
+            - 用户需要了解某个专业领域的知识（如医学、法律、科技）
+            - 用户想要获取创作灵感和参考素材
+
+            **示例**：
+            - 用户说"主角是个法医" → 搜索"法医工作内容"
+            - 用户说"故事发生在杭州" → 搜索"杭州特色景点"
+            - 用户说"我想写唐代背景" → 搜索"唐代服饰特点"
 
             ## 素材库使用指南
 
@@ -3607,16 +4223,16 @@ public class CreativeSessionService {
             ## 工具调用确认规则
 
             **重要**：以下工具调用前必须先向用户确认，确认后再执行：
-            - `add_chapter`：添加新章节前，告知用户章节标题和大致内容，询问是否确认
+            - `add_chapter`：添加新章节前，告知用户章节标题和概括，询问是否确认生成
             - `update_chapter`：修改章节前，告知用户具体修改内容，询问是否确认
 
             确认格式示例：
             ```
-            我准备添加一个新章节：
+            我准备生成一个新章节：
             - 标题：《初遇》
-            - 内容概要：女主在图书馆偶遇男主...
+            - 概括：女主在图书馆偶遇男主，两人因一本旧书产生交集。悬疑氛围，多用暗示和伏笔
 
-            确认添加吗？
+            确认生成吗？
             ```
 
             用户确认后再调用工具。
@@ -3628,12 +4244,14 @@ public class CreativeSessionService {
             2. 根据概括了解剧情进度和人物发展
             3. 确保新章节与已有内容连贯
 
-            创建章节时，必须提供：
+            创建章节时，只需提供：
             1. 章节标题
-            2. 章节内容
-            3. 章节概括（100-200字），用于后续章节参考
+            2. 章节概括（100-200字），描述本章的核心剧情、内容走向和写作要求
 
-            **重要**：不要读取已有章节的完整内容，只读取概括，避免上下文过长。
+            **重要说明**：
+            - 系统将自动在后台生成完整的章节内容，你不需要编写完整的章节正文
+            - 如果用户有个性化写作要求（如"这章写得更悬疑"、"多用对话推进"），请写入概括中
+            - 不要读取已有章节的完整内容，只读取概括，避免上下文过长
 
             ## 写作风格指南（冰山理论）
 
@@ -3713,7 +4331,11 @@ public class CreativeSessionService {
             2. 大纲将保存到小说信息中
             3. 信息面板会显示大纲内容
 
-            用户要求修改大纲时，调用 update_outline 工具。
+            用户要求修改大纲时：
+            1. 先理解用户的批注意见
+            2. 在回复中生成完整的新大纲内容
+            3. **必须调用 update_outline 工具保存新大纲**（这是强制要求，不要只用文字回复）
+            4. 告诉用户大纲已更新
 
             ## 章节创作前置条件
 
@@ -3944,6 +4566,32 @@ public class CreativeSessionService {
                     }
                     if (args.get("detail") != null) {
                         parts.add("详情: " + truncate(String.valueOf(args.get("detail")), 15));
+                    }
+                    break;
+                case "auto_generate_all":
+                    Object npObj = args.get("novelParams");
+                    if (npObj instanceof Map) {
+                        Map<String, Object> np = (Map<String, Object>) npObj;
+                        if (np.get("theme") != null) parts.add("题材: " + np.get("theme"));
+                        if (np.get("protagonistName") != null) parts.add("主角: " + np.get("protagonistName"));
+                        if (np.get("chapterCount") != null) parts.add("章节: " + np.get("chapterCount"));
+                    }
+                    Object ccObj = args.get("characterCards");
+                    if (ccObj instanceof List) {
+                        parts.add("角色卡: " + ((List<?>) ccObj).size() + "个");
+                    }
+                    Object olObj = args.get("outline");
+                    if (olObj instanceof Map) {
+                        Object ch = ((Map<String, Object>) olObj).get("chapters");
+                        if (ch instanceof List) parts.add("大纲: " + ((List<?>) ch).size() + "章");
+                    }
+                    break;
+                case "baidu_search":
+                    if (args.get("query") != null) {
+                        parts.add("搜索: " + args.get("query"));
+                    }
+                    if (args.get("freshness") != null) {
+                        parts.add("时间: " + args.get("freshness"));
                     }
                     break;
                 default:

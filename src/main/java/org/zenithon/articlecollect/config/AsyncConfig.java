@@ -79,4 +79,27 @@ public class AsyncConfig {
 
         return executor;
     }
+
+    /**
+     * 子Agent章节生成任务线程池
+     * 用于创作引导中异步生成章节内容
+     */
+    @Bean(name = "chapterGenerationTaskExecutor")
+    public Executor chapterGenerationTaskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(3);
+        executor.setQueueCapacity(20);
+        executor.setThreadNamePrefix("chapter-gen-");
+        executor.setKeepAliveSeconds(120);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(300);
+
+        executor.initialize();
+        logger.info("子Agent章节生成任务线程池初始化完成");
+
+        return executor;
+    }
 }
