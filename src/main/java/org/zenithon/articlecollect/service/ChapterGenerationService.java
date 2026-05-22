@@ -40,7 +40,7 @@ public class ChapterGenerationService {
     private static final long GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
 
     // 同一小说最大并发生成数
-    private static final int MAX_CONCURRENT_PER_NOVEL = 2;
+    private static final int MAX_CONCURRENT_PER_NOVEL = 5;
 
     // 日志文件根目录
     private static final String LOG_ROOT = "logs/chapter-generation";
@@ -51,8 +51,11 @@ public class ChapterGenerationService {
     // 内存存储任务
     private final ConcurrentHashMap<String, ChapterGenerationTask> tasks = new ConcurrentHashMap<>();
 
-    // 每个小说的并发计数
-    private final ConcurrentHashMap<Long, Integer> novelConcurrentCount = new ConcurrentHashMap<>();
+    // 每个小说的生成队列
+    private final ConcurrentHashMap<Long, LinkedList<String>> novelQueues = new ConcurrentHashMap<>();
+
+    // 每个小说当前正在生成的任务数
+    private final ConcurrentHashMap<Long, Integer> novelActiveCount = new ConcurrentHashMap<>();
 
     // 每个任务的文件日志 Writer
     private final ConcurrentHashMap<String, java.io.PrintWriter> taskLogWriters = new ConcurrentHashMap<>();
@@ -90,31 +93,86 @@ public class ChapterGenerationService {
     public String startGeneration(Long novelId, String title, String summary,
                                    SseEmitter emitter, String sessionId,
                                    String extractedParamsJson) {
-        // 并发检查
-        int currentCount = novelConcurrentCount.getOrDefault(novelId, 0);
-        if (currentCount >= MAX_CONCURRENT_PER_NOVEL) {
-            throw new RuntimeException("该小说正在生成的章节数已达上限(" + MAX_CONCURRENT_PER_NOVEL + ")，请稍后再试");
-        }
-
         String taskId = UUID.randomUUID().toString();
         ChapterGenerationTask task = new ChapterGenerationTask();
         task.setTaskId(taskId);
         task.setNovelId(novelId);
         task.setTitle(title);
         task.setSummary(summary);
-        task.setStatus("pending");
+        task.setStatus("queued");
         task.setCreatedAt(LocalDateTime.now());
         task.setEmitter(emitter);
         task.setSessionId(sessionId);
         task.setExtractedParamsJson(extractedParamsJson);
 
         tasks.put(taskId, task);
-        novelConcurrentCount.merge(novelId, 1, Integer::sum);
 
-        // 启动异步生成
-        asyncGenerate(taskId);
+        // 加入队列
+        synchronized (novelQueues) {
+            novelQueues.computeIfAbsent(novelId, k -> new LinkedList<>()).add(taskId);
+        }
+
+        logger.info("[子Agent] 章节生成任务入队: taskId={}, novelId={}, title={}, queueSize={}",
+            taskId, novelId, title, novelQueues.get(novelId).size());
+
+        // 尝试启动下一个任务
+        tryStartNext(novelId);
 
         return taskId;
+    }
+
+    /**
+     * 尝试从队列中启动待生成的任务（填满并发槽位）
+     */
+    private void tryStartNext(Long novelId) {
+        synchronized (novelQueues) {
+            int active = novelActiveCount.getOrDefault(novelId, 0);
+
+            // 填满并发槽位
+            while (active < MAX_CONCURRENT_PER_NOVEL) {
+                LinkedList<String> queue = novelQueues.get(novelId);
+                if (queue == null || queue.isEmpty()) {
+                    break;
+                }
+
+                String taskId = queue.poll();
+                if (taskId == null) {
+                    break;
+                }
+
+                ChapterGenerationTask task = tasks.get(taskId);
+                if (task != null) {
+                    active++;
+                    novelActiveCount.put(novelId, active);
+                    task.setStatus("pending");
+                    logger.info("[子Agent] 启动队列任务: taskId={}, novelId={}, active={}/{}", taskId, novelId, active, MAX_CONCURRENT_PER_NOVEL);
+                    asyncGenerate(taskId);
+                }
+                // task为null时跳过，继续尝试下一个
+            }
+        }
+    }
+
+    /**
+     * 当前任务完成后，减少并发计数，并尝试启动队列中下一个任务
+     */
+    private void onGenerationComplete(Long novelId) {
+        synchronized (novelQueues) {
+            int active = novelActiveCount.merge(novelId, -1, (old, delta) -> Math.max(0, old + delta));
+            logger.info("[子Agent] 任务完成, novelId={}, 剩余active={}", novelId, active);
+
+            // 尝试填充空出的槽位
+            tryStartNext(novelId);
+
+            // 如果没有活跃任务且队列为空，清理
+            if (active <= 0) {
+                LinkedList<String> queue = novelQueues.get(novelId);
+                if (queue == null || queue.isEmpty()) {
+                    novelQueues.remove(novelId);
+                    novelActiveCount.remove(novelId);
+                }
+            }
+        }
     }
 
     /**
@@ -165,18 +223,12 @@ public class ChapterGenerationService {
             fileLog(taskId, "summary: {}", summary);
             fileLog(taskId, "");
 
-            // 3. 获取前序章节摘要
-            List<Map<String, Object>> chapterSummaries = novelService.getChapterSummaries(novelId);
-            logger.info("[子Agent] 前序章节数={}", chapterSummaries.size());
-            for (Map<String, Object> ch : chapterSummaries) {
-                logger.debug("[子Agent]   第{}章 {}: {}", ch.get("chapterNumber"), ch.get("title"), ch.get("summary"));
-            }
+            // 3. 获取前情提要（替代逐条章节摘要）
+            String previousRecap = (novel != null && novel.getPreviousRecap() != null) ? novel.getPreviousRecap() : "";
+            logger.info("[子Agent] 前情提要长度={}", previousRecap.length());
 
-            fileLog(taskId, "----- 前序章节摘要 -----");
-            fileLog(taskId, "前序章节数: {}", chapterSummaries.size());
-            for (Map<String, Object> ch : chapterSummaries) {
-                fileLog(taskId, "  第{}章 {}: {}", ch.get("chapterNumber"), ch.get("title"), ch.get("summary"));
-            }
+            fileLog(taskId, "----- 前情提要 -----");
+            fileLog(taskId, previousRecap.isEmpty() ? "(暂无，为首章)" : previousRecap);
             fileLog(taskId, "");
 
             // 4. 解析创作参数
@@ -211,12 +263,11 @@ public class ChapterGenerationService {
             // 5. 构建 ChapterInfo
             GeneratedOutline.ChapterInfo chapterInfo = new GeneratedOutline.ChapterInfo(title, summary);
 
-            // 6. 构建大纲（用前序章节摘要拼接）
-            String outline = buildOutlineFromSummaries(chapterSummaries, novel);
-            logger.info("[子Agent] 大纲长度={}", outline.length());
-            logger.debug("[子Agent] 大纲内容: {}", outline.length() > 300 ? outline.substring(0, 300) + "..." : outline);
+            // 6. 构建精简大纲（只含小说整体大纲 + 前情提要，不再逐条列章节摘要）
+            String outline = buildCondensedOutline(novel, previousRecap);
+            logger.info("[子Agent] 精简大纲长度={}", outline.length());
 
-            fileLog(taskId, "----- 大纲 -----");
+            fileLog(taskId, "----- 精简大纲（含前情提要） -----");
             fileLog(taskId, outline);
             fileLog(taskId, "");
 
@@ -228,6 +279,9 @@ public class ChapterGenerationService {
             fileLog(taskId, "----- 世界观 -----");
             fileLog(taskId, worldview.isEmpty() ? "(无世界观)" : worldview);
             fileLog(taskId, "");
+
+            // 设置提示词日志回调，将stepService的所有API提示词写入文件日志
+            stepService.setPromptLogger(prompt -> fileLog(taskId, prompt));
 
             String relevantContext = stepService.extractRelevantContext(charactersJson, worldview, chapterInfo);
             logger.info("[子Agent] 精简上下文长度={}", relevantContext.length());
@@ -263,19 +317,72 @@ public class ChapterGenerationService {
                 fileLog(taskId, polishedContent);
                 fileLog(taskId, "");
 
-                // 10. 保存章节
+                // 10. 字数校验：如果字数不足，自动续写补足（最多2次）
+                int maxExpandRetries = 2;
+                for (int retry = 0; retry < maxExpandRetries; retry++) {
+                    int actualWords = polishedContent.length();
+                    if (actualWords >= wordsPerChapter) {
+                        fileLog(taskId, "===== 字数校验: 通过 =====");
+                        fileLog(taskId, "实际字数: {}, 要求: {}", actualWords, wordsPerChapter);
+                        fileLog(taskId, "");
+                        break;
+                    }
+
+                    int deficit = wordsPerChapter - actualWords;
+                    logger.info("[子Agent] 字数不足: 实际={}, 要求={}, 缺口={}, 第{}次续写", actualWords, wordsPerChapter, deficit, retry + 1);
+                    fileLog(taskId, "===== 字数校验: 不足（第{}次） =====", retry + 1);
+                    fileLog(taskId, "实际字数: {}, 要求: {}, 缺口: {}", actualWords, wordsPerChapter, deficit);
+
+                    sendProgressEvent(task, "expanding", "字数不足，正在续写补足（第" + (retry + 1) + "次）...");
+                    String expandedAgain = stepService.expandContent(polishedContent, deficit, languageStyle);
+                    logger.info("[子Agent] 续写完成, 新长度={}", expandedAgain.length());
+
+                    fileLog(taskId, "----- 续写结果（长度={}） -----", expandedAgain.length());
+                    fileLog(taskId, expandedAgain);
+                    fileLog(taskId, "");
+
+                    polishedContent = expandedAgain;
+
+                    // 最后一次仍不足，记录警告但不继续
+                    if (retry == maxExpandRetries - 1 && polishedContent.length() < wordsPerChapter) {
+                        logger.warn("[子Agent] 字数仍不足: 实际={}, 要求={}，已达最大续写次数", polishedContent.length(), wordsPerChapter);
+                        fileLog(taskId, "===== 字数校验: 仍未达标（已达最大续写次数） =====");
+                        fileLog(taskId, "最终字数: {}, 要求: {}", polishedContent.length(), wordsPerChapter);
+                        fileLog(taskId, "");
+                    }
+                }
+
+                // 11. 保存章节
                 sendProgressEvent(task, "saving", "正在保存章节...");
                 Chapter chapter = novelService.createChapter(novelId, title, polishedContent, null, summary);
 
-                // 11. 更新任务状态
+                // 12. 生成前情提要：将已有提要+本章内容合并为新的提要，供下一章使用
+                sendProgressEvent(task, "generating_recap", "正在生成前情提要...");
+                fileLog(taskId, "===== 开始生成前情提要 =====");
+                try {
+                    String newRecap = stepService.generateRecap(previousRecap, title, polishedContent, summary);
+                    novel.setPreviousRecap(newRecap);
+                    novelService.updateNovel(novel);
+                    logger.info("[子Agent] 前情提要已更新, 长度={}", newRecap.length());
+
+                    fileLog(taskId, "----- 新前情提要（长度={}） -----", newRecap.length());
+                    fileLog(taskId, newRecap);
+                    fileLog(taskId, "");
+                } catch (Exception e) {
+                    // 前情提要生成失败不影响章节保存
+                    logger.warn("[子Agent] 前情提要生成失败，不影响章节: {}", e.getMessage());
+                    fileLog(taskId, "前情提要生成失败: {}", e.getMessage());
+                }
+
+                // 13. 更新任务状态
                 task.setStatus("completed");
                 task.setChapterId(chapter.getId());
                 task.setCompletedAt(LocalDateTime.now());
 
-                // 12. 更新 CreativeSession 上下文
+                // 14. 更新 CreativeSession 上下文
                 updateSessionContext(task.getSessionId(), chapter.getId());
 
-                // 13. 发送完成事件
+                // 15. 发送完成事件
                 logger.info("[子Agent] 章节保存成功: chapterId={}, wordCount={}", chapter.getId(), polishedContent.length());
                 logger.info("========== 子Agent章节生成完成 ==========");
                 sendGeneratedEvent(task, chapter.getId(), title, polishedContent.length());
@@ -289,6 +396,7 @@ public class ChapterGenerationService {
 
             } finally {
                 stepService.clearCurrentModel();
+                stepService.clearPromptLogger();
             }
 
         } catch (Exception e) {
@@ -304,36 +412,34 @@ public class ChapterGenerationService {
                 fileLog(taskId, "位置: {}", e.getStackTrace()[0]);
             }
         } finally {
-            // 释放并发计数
-            novelConcurrentCount.merge(task.getNovelId(), -1, (old, delta) -> Math.max(0, old + delta));
+            // 标记当前任务完成，启动队列中下一个任务
+            onGenerationComplete(task.getNovelId());
             // 关闭文件日志
             closeFileLog(taskId);
         }
     }
 
     /**
-     * 用前序章节摘要拼接大纲
+     * 构建精简大纲：只含小说整体大纲 + 前情提要
+     * 替代旧的逐条章节摘要拼接方式，大幅节省token
      */
-    private String buildOutlineFromSummaries(List<Map<String, Object>> chapterSummaries, Novel novel) {
+    private String buildCondensedOutline(Novel novel, String previousRecap) {
         StringBuilder sb = new StringBuilder();
 
+        // 小说整体大纲
         if (novel != null && novel.getOutline() != null && !novel.getOutline().isEmpty()) {
             sb.append(novel.getOutline());
         }
 
-        if (!chapterSummaries.isEmpty()) {
+        // 前情提要
+        if (previousRecap != null && !previousRecap.isEmpty()) {
             if (sb.length() > 0) {
                 sb.append("\n\n");
             }
-            sb.append("已有章节进度：\n");
-            for (Map<String, Object> ch : chapterSummaries) {
-                sb.append("第").append(ch.get("chapterNumber")).append("章 ")
-                  .append(ch.get("title")).append("：")
-                  .append(ch.get("summary")).append("\n");
-            }
+            sb.append("【前情提要】\n").append(previousRecap);
         }
 
-        return sb.length() > 0 ? sb.toString() : "暂无前序章节";
+        return sb.length() > 0 ? sb.toString() : "暂无大纲和前情提要";
     }
 
     /**
@@ -533,7 +639,7 @@ public class ChapterGenerationService {
         private Long novelId;
         private String title;
         private String summary;
-        private String status; // pending / generating / completed / failed
+        private String status; // queued / pending / generating / completed / failed
         private Long chapterId;
         private String error;
         private LocalDateTime createdAt;

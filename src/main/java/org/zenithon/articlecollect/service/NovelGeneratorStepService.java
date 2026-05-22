@@ -34,6 +34,9 @@ public class NovelGeneratorStepService {
     // ThreadLocal 存储当前任务使用的模型
     private final ThreadLocal<String> currentModel = new ThreadLocal<>();
 
+    // ThreadLocal 存储提示词日志回调，用于子Agent记录完整的system/user prompt
+    private final ThreadLocal<java.util.function.Consumer<String>> promptLogger = new ThreadLocal<>();
+
     /**
      * 设置当前任务使用的模型
      */
@@ -56,6 +59,31 @@ public class NovelGeneratorStepService {
         currentModel.remove();
     }
 
+    /**
+     * 设置提示词日志回调
+     */
+    public void setPromptLogger(java.util.function.Consumer<String> logger) {
+        promptLogger.set(logger);
+    }
+
+    /**
+     * 清除提示词日志回调
+     */
+    public void clearPromptLogger() {
+        promptLogger.remove();
+    }
+
+    /**
+     * 记录提示词到日志回调
+     */
+    private void logPrompts(String systemPrompt, String userPrompt) {
+        java.util.function.Consumer<String> logger = promptLogger.get();
+        if (logger != null) {
+            logger.accept("----- System Prompt -----\n" + (systemPrompt != null ? systemPrompt : "(null)"));
+            logger.accept("----- User Prompt -----\n" + (userPrompt != null ? userPrompt : "(null)"));
+        }
+    }
+
     private MaterialService materialService;
 
     public NovelGeneratorStepService(AIPromptService aiPromptService, ObjectMapper objectMapper) {
@@ -73,6 +101,9 @@ public class NovelGeneratorStepService {
      */
     private String callAPI(String systemPrompt, String userPrompt,
                            boolean enableThinking, String reasoningEffort, int maxTokens) throws Exception {
+        // 记录提示词到日志回调
+        logPrompts(systemPrompt, userPrompt);
+
         String model = currentModel.get();
         if (model != null && !model.isEmpty()) {
             return aiPromptService.callDeepSeekAPIWithModel(systemPrompt, userPrompt,
@@ -90,6 +121,9 @@ public class NovelGeneratorStepService {
     private String callAPIWithJsonRetry(String systemPrompt, String userPrompt,
                                          boolean enableThinking, String reasoningEffort,
                                          int maxTokens, int maxRetries) throws Exception {
+        // 记录提示词到日志回调
+        logPrompts(systemPrompt, userPrompt);
+
         String model = currentModel.get();
         if (model != null && !model.isEmpty()) {
             // 对于带模型参数的 JSON 重试调用
@@ -749,6 +783,7 @@ public class NovelGeneratorStepService {
             "   - 禁止：\"他感到的不是愤怒，而是……\"\n" +
             "   - 禁止：\"她并非软弱，而是……\"\n" +
             "   - 禁止：\"这不仅仅是一次失败，更是……\"\n" +
+            "   - **绝对禁止\"不是……而是……\"句式**，无论出现在叙述还是对话中都不允许\n" +
             "   - 禁止任何\"不是……是……\"的变形句式\n" +
             "2. **禁止解释性总结句**：不要对人物情感或行为进行解释概括\n" +
             "3. **禁止工整结构**：不要使用\"首先、其次、最后\"、\"第一、第二、第三\"等刻板框架\n" +
@@ -1013,6 +1048,7 @@ public class NovelGeneratorStepService {
             "   - 禁止：\"他感到的不是愤怒，而是……\"\n" +
             "   - 禁止：\"她并非软弱，而是……\"\n" +
             "   - 禁止：\"这不仅仅是一次失败，更是……\"\n" +
+            "   - **绝对禁止\"不是……而是……\"句式**，无论出现在叙述还是对话中都必须删除或改写\n" +
             "   - 禁止任何\"不是……是……\"、\"与其说……不如说……\"的变形句式\n" +
             "   - 直接描述事实和感受，不要用对比来解释\n\n" +
             "2. **禁止解释性总结句**：\n" +
@@ -1087,5 +1123,62 @@ public class NovelGeneratorStepService {
         if (content == null) return null;
         // 在每个中文句号后面添加一个换行符
         return content.replaceAll("。", "。\n");
+    }
+
+    // ==================== 前情提要生成 ====================
+
+    /**
+     * 生成前情提要：将已有的前情提要和新章节内容合并为一段精简概括
+     *
+     * @param existingRecap 已有的前情提要（可为空，表示第一章）
+     * @param chapterTitle 新章节标题
+     * @param chapterContent 新章节内容（完整正文，会自动截取以节省token）
+     * @param chapterSummary 新章节概括
+     * @return 合并后的新前情提要
+     */
+    public String generateRecap(String existingRecap, String chapterTitle,
+                                 String chapterContent, String chapterSummary) throws Exception {
+        logger.info("开始生成前情提要, 现有提要长度={}, 新章节标题={}",
+            existingRecap != null ? existingRecap.length() : 0, chapterTitle);
+
+        String systemPrompt = SYSTEM_PREFIX +
+            "你是一名故事概括专家。你的任务是将已有的前情提要和新章节的内容，合并为一段简洁的前情提要。\n\n" +
+            "要求：\n" +
+            "1. 保留所有关键情节线索、人物关系变化、重要事件\n" +
+            "2. 删除细节描写，只保留推动剧情发展的核心事件\n" +
+            "3. 按时间顺序组织，逻辑清晰\n" +
+            "4. 控制在300-500字以内\n" +
+            "5. 不要添加任何评价、解释或额外说明，只输出前情提要内容";
+
+        String userPrompt;
+        if (existingRecap == null || existingRecap.isEmpty()) {
+            // 第一章：直接概括本章内容
+            userPrompt = "请概括以下章节内容，作为后续章节的前情提要：\n\n" +
+                "章节标题：" + chapterTitle + "\n" +
+                "章节概括：" + (chapterSummary != null ? chapterSummary : "") + "\n" +
+                "章节内容（节选）：" + truncateForRecap(chapterContent);
+        } else {
+            // 后续章节：合并已有提要 + 新章节
+            userPrompt = "已有前情提要：\n" + existingRecap +
+                "\n\n新章节标题：" + chapterTitle +
+                "\n新章节概括：" + (chapterSummary != null ? chapterSummary : "") +
+                "\n新章节内容（节选）：" + truncateForRecap(chapterContent) +
+                "\n\n请将已有前情提要和新章节内容合并，生成一段更新后的前情提要。保留所有关键情节，控制在300-500字以内。";
+        }
+
+        String result = callAPI(systemPrompt, userPrompt, false, null, 2000);
+        logger.info("前情提要生成完成, 长度: {}", result.length());
+        return result;
+    }
+
+    /**
+     * 截取章节内容用于前情提要生成（取首尾各一部分，节省token）
+     */
+    private String truncateForRecap(String content) {
+        if (content == null || content.isEmpty()) return "(无内容)";
+        int maxLen = 1500;
+        if (content.length() <= maxLen) return content;
+        // 取开头800字 + 结尾700字
+        return content.substring(0, 800) + "\n...(中间省略)...\n" + content.substring(content.length() - 700);
     }
 }

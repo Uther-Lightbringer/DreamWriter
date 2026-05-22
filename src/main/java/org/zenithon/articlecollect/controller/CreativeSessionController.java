@@ -185,6 +185,24 @@ public class CreativeSessionController {
     }
 
     /**
+     * 修复会话中损坏的消息
+     */
+    @PostMapping("/{sessionId}/repair")
+    public ResponseEntity<Map<String, Object>> repairSession(@PathVariable String sessionId) {
+        logger.info("修复会话消息: sessionId={}", sessionId);
+        try {
+            Map<String, Object> result = sessionService.repairSession(sessionId);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            logger.error("修复会话失败: {}", e.getMessage(), e);
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("success", false);
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.internalServerError().body(errorResponse);
+        }
+    }
+
+    /**
      * 获取会话统计信息
      */
     @GetMapping("/{sessionId}/stats")

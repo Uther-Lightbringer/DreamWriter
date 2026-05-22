@@ -79,6 +79,13 @@ public class NovelService {
         Novel novel = new Novel(title);
         return novelRepository.save(novel);
     }
+
+    /**
+     * 检查小说是否存在
+     */
+    public boolean existsById(Long novelId) {
+        return novelRepository.existsById(novelId);
+    }
     
     /**
      * 创建新小说（带作者信息）
@@ -108,28 +115,21 @@ public class NovelService {
             setChaptersCount(novel);
             // 批量分析章节标签（首次访问时生成，后续直接读取数据库）
             chapterTagService.batchAnalyzeNovelChapters(novelId);
-            
-            // 对章节进行排序并重新设置
-            List<Chapter> sortedChapters = novel.getChapters();
-            if (sortedChapters != null) {
-                Collections.sort(sortedChapters, Comparator.comparing(Chapter::getChapterNumber));
-                novel.setChapters(sortedChapters);
-            }
-            
+
+            // 使用直接查询获取排序后的章节，避免懒加载异常
+            List<Chapter> sortedChapters = chapterRepository.findByNovelIdOrderByChapterNumberAsc(novelId);
+            novel.setChapters(sortedChapters);
+
             // 设置章节数
             setChaptersCount(novel);
-            
+
             return novel;
         }
         return null;
     }
 
     private void setChaptersCount(Novel novel) {
-        if (novel.getChapters() != null) {
-            novel.setChaptersCount(novel.getChapters().size());
-        } else {
-            novel.setChaptersCount(0);
-        }
+        novel.setChaptersCount((int) chapterRepository.countByNovelId(novel.getId()));
     }
 
     /**
@@ -137,8 +137,8 @@ public class NovelService {
      */
     public List<Novel> getAllNovels() {
         List<Novel> novels = novelRepository.findAllByOrderByCreateTimeDesc();
-        // 为所有小说确保格式化时间字段被正确设置
-        novels.forEach(n -> n.setChaptersCount(n.getChapters().size()));
+        // 使用直接查询章节数量，避免懒加载异常（异步线程中无Hibernate Session）
+        novels.forEach(n -> n.setChaptersCount((int) chapterRepository.countByNovelId(n.getId())));
         novels.forEach(this::ensureFormattedTime);
         return novels;
     }

@@ -16,6 +16,7 @@ import org.zenithon.articlecollect.dto.CharacterCard;
 import org.zenithon.articlecollect.dto.CharacterCardRelationship;
 
 import java.io.IOException;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1351,12 +1352,19 @@ public class AIPromptService {
 
                             if (choices.isArray() && choices.size() > 0) {
                                 JsonNode delta = choices.get(0).path("delta");
-                                String content = delta.path("content").asText();
+                                String content = null;
+
+                                // 处理 content
+                                if (delta.has("content") && !delta.get("content").isNull()) {
+                                    content = delta.get("content").asText();
+                                }
 
                                 // 处理 reasoning_content
-                                JsonNode reasoningNode = delta.get("reasoning_content");
-                                if ((content == null || content.isEmpty()) && reasoningNode != null && !reasoningNode.isNull()) {
-                                    content = reasoningNode.asText();
+                                if (content == null || content.isEmpty()) {
+                                    JsonNode reasoningNode = delta.get("reasoning_content");
+                                    if (reasoningNode != null && !reasoningNode.isNull()) {
+                                        content = reasoningNode.asText();
+                                    }
                                 }
 
                                 if (content != null && !content.isEmpty()) {
@@ -1380,5 +1388,161 @@ public class AIPromptService {
             logger.error("流式对话失败：" + e.getMessage(), e);
             throw e;
         }
+    }
+
+    /**
+     * 流式 AI 对话 - 支持完整消息列表（真正流式）
+     * 使用 Java HttpClient 逐行读取 DeepSeek SSE 响应，实时推送给前端
+     *
+     * @param messages 完整的消息列表（多轮对话上下文）
+     * @param emitter  SSE 发射器
+     * @param config   运行时配置
+     * @return 完整的 AI 回复内容
+     */
+    public ChatStreamResult chatStreamWithMessages(
+            List<Map<String, Object>> messages,
+            SseEmitter emitter,
+            org.zenithon.articlecollect.dto.DeepSeekRuntimeConfig config) throws Exception {
+
+        if (config == null) {
+            config = deepSeekConfigService.getDefaultRuntimeConfig(
+                    org.zenithon.articlecollect.entity.DeepSeekFeatureConfig.FeatureCode.AI_CHAT);
+        }
+
+        if (deepSeekConfig.getApiKey() == null || deepSeekConfig.getApiKey().trim().isEmpty()) {
+            emitter.send(SseEmitter.event().name("error")
+                    .data("{\"error\": \"DeepSeek API Key 未配置\"}"));
+            return new ChatStreamResult("", null, 0, 0, 0);
+        }
+
+        // 构建请求体
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", config.getModel());
+        requestBody.put("stream", true);
+
+        if (config.getTemperature() != null) requestBody.put("temperature", config.getTemperature());
+        if (config.getTopP() != null) requestBody.put("top_p", config.getTopP());
+        if (config.getFrequencyPenalty() != null) requestBody.put("frequency_penalty", config.getFrequencyPenalty());
+        if (config.getPresencePenalty() != null) requestBody.put("presence_penalty", config.getPresencePenalty());
+
+        if (config.getThinkingEnabled()) {
+            Map<String, Object> thinking = new HashMap<>();
+            thinking.put("type", "enabled");
+            requestBody.put("thinking", thinking);
+            requestBody.put("reasoning_effort", config.getReasoningEffort());
+        }
+
+        requestBody.put("messages", messages);
+
+        String requestBodyJson = objectMapper.writeValueAsString(requestBody);
+
+        // 使用 Java HttpClient 实现真正的流式读取
+        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        java.net.http.HttpRequest httpRequest = java.net.http.HttpRequest.newBuilder()
+                .uri(URI.create(deepSeekConfig.getApiUrl()))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + deepSeekConfig.getApiKey())
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(requestBodyJson))
+                .build();
+
+        logger.info("调用 DeepSeek API (流式), model={}, thinking={}",
+                config.getModel(), config.getThinkingEnabled());
+
+        java.net.http.HttpResponse<java.io.InputStream> httpResponse = client.send(
+                httpRequest, java.net.http.HttpResponse.BodyHandlers.ofInputStream());
+
+        if (httpResponse.statusCode() != 200) {
+            // 读取错误响应体
+            String errorBody = new String(httpResponse.body().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            throw new RuntimeException("API 调用失败：" + httpResponse.statusCode() + " " + errorBody);
+        }
+
+        StringBuilder fullContent = new StringBuilder();
+        StringBuilder reasoningContent = new StringBuilder();
+        int promptTokens = 0;
+        int completionTokens = 0;
+        int totalTokens = 0;
+
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(httpResponse.body(), java.nio.charset.StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty() || line.startsWith(":")) continue;
+
+                if (line.startsWith("data: ")) {
+                    String data = line.substring(6);
+                    if ("[DONE]".equals(data.trim())) break;
+
+                    try {
+                        JsonNode jsonNode = objectMapper.readTree(data);
+                        JsonNode choices = jsonNode.path("choices");
+
+                        if (choices.isArray() && choices.size() > 0) {
+                            JsonNode delta = choices.get(0).path("delta");
+
+                            // 处理 content
+                            if (delta.has("content") && !delta.get("content").isNull()) {
+                                String content = delta.get("content").asText();
+                                if (!content.isEmpty()) {
+                                    fullContent.append(content);
+                                    emitter.send(SseEmitter.event().name("message").data(content));
+                                }
+                            }
+
+                            // 处理 reasoning_content
+                            if (delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
+                                String rc = delta.get("reasoning_content").asText();
+                                if (!rc.isEmpty()) {
+                                    reasoningContent.append(rc);
+                                    emitter.send(SseEmitter.event().name("reasoning_content").data(rc));
+                                }
+                            }
+                        }
+
+                        // 解析 usage（通常在最后一个 chunk）
+                        JsonNode usageNode = jsonNode.path("usage");
+                        if (!usageNode.isMissingNode() && !usageNode.isNull()) {
+                            promptTokens = usageNode.path("prompt_tokens").asInt(0);
+                            completionTokens = usageNode.path("completion_tokens").asInt(0);
+                            totalTokens = usageNode.path("total_tokens").asInt(0);
+                        }
+                    } catch (Exception e) {
+                        logger.warn("解析 SSE 数据块失败：" + e.getMessage());
+                    }
+                }
+            }
+        }
+
+        logger.info("流式对话完成，内容长度: {}, tokens: {}/{}/{}",
+                fullContent.length(), promptTokens, completionTokens, totalTokens);
+
+        return new ChatStreamResult(fullContent.toString(), reasoningContent.toString(),
+                promptTokens, completionTokens, totalTokens);
+    }
+
+    /**
+     * 流式对话结果
+     */
+    public static class ChatStreamResult {
+        private final String content;
+        private final String reasoningContent;
+        private final int promptTokens;
+        private final int completionTokens;
+        private final int totalTokens;
+
+        public ChatStreamResult(String content, String reasoningContent,
+                                int promptTokens, int completionTokens, int totalTokens) {
+            this.content = content;
+            this.reasoningContent = reasoningContent;
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+            this.totalTokens = totalTokens;
+        }
+
+        public String getContent() { return content; }
+        public String getReasoningContent() { return reasoningContent; }
+        public int getPromptTokens() { return promptTokens; }
+        public int getCompletionTokens() { return completionTokens; }
+        public int getTotalTokens() { return totalTokens; }
     }
 }

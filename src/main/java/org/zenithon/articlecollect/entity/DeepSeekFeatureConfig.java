@@ -69,14 +69,14 @@ public class DeepSeekFeatureConfig {
      * 降低重复用词概率：正值减少重复，负值允许更多重复
      */
     @Column(name = "frequency_penalty", nullable = false)
-    private Double frequencyPenalty = 1.0;
+    private Double frequencyPenalty = 2.0;
 
     /**
      * 存在惩罚 (-2到2)
      * 鼓励谈论新话题：正值鼓励多样性，负值允许聚焦同一话题
      */
     @Column(name = "presence_penalty", nullable = false)
-    private Double presencePenalty = -2.0;
+    private Double presencePenalty = 1.0;
 
     /**
      * 功能描述

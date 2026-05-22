@@ -31,6 +31,9 @@ public class Novel {
     @Column(name = "outline", length = 50000, columnDefinition = "TEXT")
     private String outline;  // 小说大纲
 
+    @Column(name = "previous_recap", length = 50000, columnDefinition = "TEXT")
+    private String previousRecap;  // 前情提要：所有已生成章节的合并概括
+
     @Column(name = "create_time")
     private LocalDateTime createTime;
     
@@ -144,6 +147,16 @@ public class Novel {
 
     public void setOutline(String outline) {
         this.outline = outline;
+        this.updateTime = LocalDateTime.now();
+        this.formattedCreateTime = formatTime(this.updateTime);
+    }
+
+    public String getPreviousRecap() {
+        return previousRecap;
+    }
+
+    public void setPreviousRecap(String previousRecap) {
+        this.previousRecap = previousRecap;
         this.updateTime = LocalDateTime.now();
         this.formattedCreateTime = formatTime(this.updateTime);
     }

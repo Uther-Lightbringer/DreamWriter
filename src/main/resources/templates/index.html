@@ -160,8 +160,11 @@
             justify-content: center;
             gap: 18px;
             flex-wrap: wrap;
-            margin-bottom: 40px;
+            margin-bottom: 60px;
             animation: fadeInUp 0.8s ease-out 0.2s both;
+            position: relative;
+            z-index: 10;
+        }
         }
 
         @keyframes fadeInUp {
@@ -304,7 +307,7 @@
             position: absolute;
             top: calc(100% + 8px);
             left: 50%;
-            transform: translateX(-50%) translateY(-10px);
+            transform: translateX(-50%);
             opacity: 0;
             visibility: hidden;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -323,7 +326,7 @@
         .dream-btn-group.open .settings-dropdown {
             opacity: 1;
             visibility: visible;
-            transform: translateX(-50%) translateY(0);
+            transform: translateX(-50%);
             pointer-events: auto;
         }
 
@@ -755,14 +758,20 @@
         // 下拉菜单切换
         function toggleWorksMenu() {
             const group = event.target.closest('.dream-btn-group');
-            closeAllMenus(group);
-            group.classList.toggle('open');
+            const isOpen = group.classList.contains('open');
+            closeAllMenus();
+            if (!isOpen) {
+                group.classList.add('open');
+            }
         }
 
         function toggleSettingsMenu() {
             const group = event.target.closest('.dream-btn-group');
-            closeAllMenus(group);
-            group.classList.toggle('open');
+            const isOpen = group.classList.contains('open');
+            closeAllMenus();
+            if (!isOpen) {
+                group.classList.add('open');
+            }
         }
 
         function closeAllMenus(except) {

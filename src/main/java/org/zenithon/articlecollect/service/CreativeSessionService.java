@@ -53,6 +53,8 @@ public class CreativeSessionService {
     private static final int KEEP_RECENT_TURNS = 5;
     // 工具调用最大递归深度，防止无限递归
     private static final int MAX_TOOL_RECURSION_DEPTH = 5;
+    // 清理AI思考标签的正则
+    private static final Pattern THINK_TAG_PATTERN = Pattern.compile("<think>.*?</think>", Pattern.DOTALL);
 
     // 工具名称中文映射
     private static final Map<String, String> TOOL_NAME_MAP = Map.ofEntries(
@@ -81,6 +83,23 @@ public class CreativeSessionService {
 
     // 系统提示词（固定部分）
     private static final String SYSTEM_PROMPT_BASE = buildSystemPromptBase();
+
+    // 默认写作质量提示词
+    private static final String DEFAULT_WRITING_QUALITY_PROMPT = """
+            ## 写作质量要求
+
+            你必须用感官语言和动作细节来呈现故事，而非抽象概括。遵循以下原则：
+
+            1. **五感先行**：每个场景至少调动2种感官。写"冷"不如写"指尖碰到铁栏杆，像被针扎了一下"；写"香"不如写"空气里飘着桂花酿过头的甜腻味"
+            2. **动作替心理**：永远不写"她很难过"，而是写她做了什么——"她把筷子放下，盯着碗里那片浮着的肥肉看了很久，然后推开椅子站起来"
+            3. **细节替形容词**：删掉"美丽的""精致的""温暖地"，换成具体的视觉画面——"裙摆底下露出一截绷得发白的棉袜"
+            4. **对话带身体**：人物说话时必须伴随动作——"她把窗关上，背靠着窗台，'你走吧。'"
+            5. **绝对禁止"不是……而是……"口癖**：无论叙述还是对话，不允许出现"不是A而是B""并非A而是B"等对比转折句式，直接写事实
+
+            **核心标准**：读完你的文字，读者脑中应该浮现出画面，而不是得到一段总结。""";
+
+    // 自定义写作质量提示词（可通过配置覆盖）
+    private final String writingQualityPrompt;
 
     private final CreativeSessionRepository sessionRepository;
     private final CreativeMemoryRepository memoryRepository;
@@ -119,13 +138,15 @@ public class CreativeSessionService {
             DeepSeekConfig deepSeekConfig,
             DeepSeekConfigService deepSeekConfigService,
             RestTemplate restTemplate,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            @org.springframework.beans.factory.annotation.Value("${creative.writing-quality-prompt:}") String writingQualityPrompt) {
         this.sessionRepository = sessionRepository;
         this.memoryRepository = memoryRepository;
         this.deepSeekConfig = deepSeekConfig;
         this.deepSeekConfigService = deepSeekConfigService;
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
+        this.writingQualityPrompt = writingQualityPrompt;
     }
 
     // ==================== 会话上下文管理 ====================
@@ -310,8 +331,20 @@ public class CreativeSessionService {
         // 获取最近的消息（不压缩），确保 tool_calls/tool 消息配对完整
         List<Map<String, Object>> recentMessages = extractRecentMessages(messages, keepMessageCount);
 
-        // 构建状态摘要
-        Map<String, Object> stateSummary = buildStateSummaryMessage(session, messages, recentMessages);
+        // 提取即将被丢弃的旧消息（systemMessage和recentMessages之间的部分）
+        int recentStartIndex = messages.size() - recentMessages.size();
+        List<Map<String, Object>> oldMessages = new ArrayList<>(messages.subList(1, recentStartIndex));
+
+        // 调用AI生成讨论历程摘要（降级：失败时返回null，不影响压缩）
+        String discussionSummary = generateDiscussionSummary(oldMessages);
+        if (discussionSummary != null) {
+            logger.info("讨论历程摘要生成成功, 长度={}", discussionSummary.length());
+        } else {
+            logger.info("讨论历程摘要生成失败或跳过，仅使用结构化状态摘要");
+        }
+
+        // 构建状态摘要（含AI讨论摘要）
+        Map<String, Object> stateSummary = buildStateSummaryMessage(session, messages, recentMessages, discussionSummary);
 
         // 替换消息历史
         messages.clear();
@@ -327,8 +360,8 @@ public class CreativeSessionService {
         int userTurnsAfter = countUserTurns(messages);
         int turnsCompressed = userTurnsBefore - userTurnsAfter;
 
-        logger.info("手动压缩完成: sessionId={}, 压缩前={}, 压缩后={}, 压缩轮数={}",
-            sessionId, messagesBefore, messagesAfter, turnsCompressed);
+        logger.info("手动压缩完成: sessionId={}, 压缩前={}, 压缩后={}, 压缩轮数={}, AI摘要={}",
+            sessionId, messagesBefore, messagesAfter, turnsCompressed, discussionSummary != null ? "已生成" : "未生成");
 
         return Map.of(
             "success", true,
@@ -760,20 +793,34 @@ public class CreativeSessionService {
                                 logger.info("工具调用完成，再次调用 API 让 AI 继续生成响应");
                                 continueAfterToolCalls(messages, emitter, session, config, 0);
                             } else {
-                                // 没有工具调用，正常结束
-                                session.setMessages(toJson(messages));
-                                sessionRepository.save(session);
+                                // 没有工具调用，检查是否 content 为空但有 reasoning_content
+                                boolean hasReasoningButNoContent = fullContent.length() == 0 && reasoningContent.length() > 0;
 
-                                // 发送 usage 事件
-                                if (!usageInfo.isEmpty()) {
-                                    emitter.send(SseEmitter.event()
-                                            .name("usage")
-                                            .data(objectMapper.writeValueAsString(usageInfo)));
+                                if (hasReasoningButNoContent) {
+                                    // AI 只输出了思考内容但没有正文，追加提示让 AI 继续回复
+                                    logger.info("AI只输出了思考内容（长度={}）但没有正文，将自动追加提示让AI继续", reasoningContent.length());
+                                    messages.add(Map.of(
+                                        "role", "user",
+                                        "content", "请基于你的思考，继续给出你的回复。"
+                                    ));
+                                    // 再次调用 API，让 AI 生成有内容的回复
+                                    continueAfterEmptyContent(messages, emitter, session, config);
+                                } else {
+                                    // 正常结束
+                                    session.setMessages(toJson(messages));
+                                    sessionRepository.save(session);
+
+                                    // 发送 usage 事件
+                                    if (!usageInfo.isEmpty()) {
+                                        emitter.send(SseEmitter.event()
+                                                .name("usage")
+                                                .data(objectMapper.writeValueAsString(usageInfo)));
+                                    }
+
+                                    // 发送完成事件
+                                    emitter.send(SseEmitter.event().name("done").data("{}"));
+                                    emitter.complete();
                                 }
-
-                                // 发送完成事件
-                                emitter.send(SseEmitter.event().name("done").data("{}"));
-                                emitter.complete();
                             }
 
                         } catch (Exception e) {
@@ -792,6 +839,176 @@ public class CreativeSessionService {
         } catch (Exception e) {
             logger.error("流式调用失败: {}", e.getMessage(), e);
             sendError(emitter, "流式调用失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * content为空但有reasoning_content时，追加提示让AI继续回复
+     */
+    private void continueAfterEmptyContent(List<Map<String, Object>> messages, SseEmitter emitter, CreativeSession session, DeepSeekRuntimeConfig config) {
+        repairMessages(messages);
+
+        try {
+            // 发送提示事件，告知前端正在继续生成
+            emitter.send(SseEmitter.event()
+                    .name("content")
+                    .data(objectMapper.writeValueAsString(Map.of("text", "\n\n"))));
+
+            Map<String, Object> requestBody = buildChatRequestBody(messages, config);
+            String requestBodyStr = objectMapper.writeValueAsString(requestBody);
+
+            restTemplate.execute(
+                    deepSeekConfig.getApiUrl(),
+                    org.springframework.http.HttpMethod.POST,
+                    request -> {
+                        request.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+                        request.getHeaders().set("Authorization", "Bearer " + deepSeekConfig.getApiKey());
+                        request.getBody().write(requestBodyStr.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    },
+                    response -> {
+                        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(response.getBody(), java.nio.charset.StandardCharsets.UTF_8))) {
+
+                            StringBuilder fullContent = new StringBuilder();
+                            StringBuilder reasoningContent = new StringBuilder();
+                            Map<String, Map<String, Object>> toolCallsMap = new LinkedHashMap<>();
+                            Map<String, Object> usageInfo = new LinkedHashMap<>();
+                            String line;
+
+                            while ((line = reader.readLine()) != null) {
+                                if (line.trim().isEmpty() || line.startsWith(":")) {
+                                    continue;
+                                }
+
+                                if (line.startsWith("data: ")) {
+                                    String data = line.substring(6);
+
+                                    if ("[DONE]".equals(data.trim())) {
+                                        break;
+                                    }
+
+                                    try {
+                                        JsonNode jsonNode = objectMapper.readTree(data);
+                                        JsonNode choices = jsonNode.path("choices");
+
+                                        JsonNode usageNode = jsonNode.get("usage");
+                                        if (usageNode != null && !usageNode.isNull()) {
+                                            usageInfo.clear();
+                                            usageNode.fields().forEachRemaining(entry -> {
+                                                usageInfo.put(entry.getKey(), entry.getValue().asInt());
+                                            });
+                                        }
+
+                                        if (choices.isArray() && choices.size() > 0) {
+                                            JsonNode delta = choices.get(0).path("delta");
+
+                                            // 转发 reasoning_content
+                                            JsonNode reasoningNode = delta.get("reasoning_content");
+                                            if (reasoningNode != null && !reasoningNode.isNull() && reasoningNode.isTextual()) {
+                                                String reasoningChunk = reasoningNode.asText();
+                                                if (reasoningChunk != null && !reasoningChunk.isEmpty()) {
+                                                    reasoningContent.append(reasoningChunk);
+                                                    emitter.send(SseEmitter.event()
+                                                            .name("reasoning_content")
+                                                            .data(objectMapper.writeValueAsString(Map.of("text", reasoningChunk))));
+                                                }
+                                            }
+
+                                            // 转发 content
+                                            JsonNode contentNode = delta.get("content");
+                                            if (contentNode != null && !contentNode.isNull() && contentNode.isTextual()) {
+                                                String content = contentNode.asText();
+                                                if (content != null && !content.isEmpty()) {
+                                                    fullContent.append(content);
+                                                    emitter.send(SseEmitter.event()
+                                                            .name("content")
+                                                            .data(objectMapper.writeValueAsString(Map.of("text", content))));
+                                                }
+                                            }
+
+                                            // 累积 tool_calls
+                                            JsonNode toolCallsDelta = delta.path("tool_calls");
+                                            if (toolCallsDelta.isArray() && toolCallsDelta.size() > 0) {
+                                                for (JsonNode tc : toolCallsDelta) {
+                                                    int index = tc.path("index").asInt(-1);
+                                                    String toolCallId = tc.path("id").asText(null);
+                                                    JsonNode function = tc.path("function");
+                                                    String functionName = function.path("name").asText(null);
+                                                    String argumentsChunk = function.path("arguments").asText(null);
+
+                                                    String mapKey = (index >= 0) ? String.valueOf(index) : "_default_";
+
+                                                    Map<String, Object> toolCall = toolCallsMap.computeIfAbsent(
+                                                            mapKey,
+                                                            k -> {
+                                                                Map<String, Object> tc2 = new LinkedHashMap<>();
+                                                                tc2.put("id", "pending_id_" + index);
+                                                                tc2.put("type", "function");
+                                                                tc2.put("index", index);
+                                                                Map<String, Object> func = new LinkedHashMap<>();
+                                                                func.put("name", "");
+                                                                func.put("arguments", new StringBuilder());
+                                                                tc2.put("function", func);
+                                                                return tc2;
+                                                            }
+                                                    );
+
+                                                    if (toolCallId != null && !toolCallId.isEmpty()) {
+                                                        toolCall.put("id", toolCallId);
+                                                    }
+
+                                                    Map<String, Object> func = (Map<String, Object>) toolCall.get("function");
+                                                    if (functionName != null && !functionName.isEmpty()) {
+                                                        func.put("name", functionName);
+                                                    }
+                                                    if (argumentsChunk != null && !argumentsChunk.isEmpty()) {
+                                                        ((StringBuilder) func.get("arguments")).append(argumentsChunk);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } catch (Exception e) {
+                                        logger.warn("解析 SSE 数据块失败: {}", e.getMessage());
+                                    }
+                                }
+                            }
+
+                            // 构建助手消息
+                            Map<String, Object> assistantMessage = new LinkedHashMap<>();
+                            assistantMessage.put("role", "assistant");
+                            assistantMessage.put("content", fullContent.toString());
+                            if (reasoningContent.length() > 0) {
+                                assistantMessage.put("reasoning_content", reasoningContent.toString());
+                            }
+                            messages.add(assistantMessage);
+
+                            // 保存会话
+                            session.setMessages(toJson(messages));
+                            sessionRepository.save(session);
+
+                            // 发送 usage 和 done
+                            if (!usageInfo.isEmpty()) {
+                                emitter.send(SseEmitter.event()
+                                        .name("usage")
+                                        .data(objectMapper.writeValueAsString(usageInfo)));
+                            }
+
+                            emitter.send(SseEmitter.event().name("done").data("{}"));
+                            emitter.complete();
+
+                        } catch (Exception e) {
+                            logger.error("继续生成响应失败: {}", e.getMessage(), e);
+                            try {
+                                sendError(emitter, "继续生成失败: " + e.getMessage());
+                            } catch (Exception ignored) {}
+                        }
+                        return null;
+                    }
+            );
+
+        } catch (Exception e) {
+            logger.error("调用继续生成失败: {}", e.getMessage(), e);
+            sendError(emitter, "继续生成失败: " + e.getMessage());
         }
     }
 
@@ -1636,7 +1853,7 @@ public class CreativeSessionService {
                 "success", true,
                 "taskId", taskId,
                 "status", "generating",
-                "message", "章节正在后台生成中，完成后将自动保存并通知"
+                "message", "章节已加入生成队列，将按顺序自动生成并保存"
             ));
         } catch (Exception e) {
             logger.error("添加章节失败: {}", e.getMessage(), e);
@@ -3024,9 +3241,142 @@ public class CreativeSessionService {
         return recentMessages;
     }
 
-    private Map<String, Object> buildStateSummaryMessage(CreativeSession session, List<Map<String, Object>> allMessages, List<Map<String, Object>> recentMessages) {
+    /**
+     * 调用DeepSeek对旧对话生成讨论历程摘要
+     * @param oldMessages 即将被丢弃的旧消息列表
+     * @return AI生成的讨论摘要，调用失败时返回null
+     */
+    private String generateDiscussionSummary(List<Map<String, Object>> oldMessages) {
+        try {
+            if (oldMessages == null || oldMessages.isEmpty()) {
+                return null;
+            }
+
+            // 将旧消息拼接为文本
+            StringBuilder conversationText = new StringBuilder();
+            for (Map<String, Object> msg : oldMessages) {
+                String role = (String) msg.get("role");
+                if ("system".equals(role)) continue; // 跳过系统消息
+                String msgContent = (String) msg.get("content");
+                if (msgContent == null || msgContent.isEmpty()) {
+                    // tool_calls消息可能没有content，跳过
+                    if (msg.get("tool_calls") != null) continue;
+                    if (msg.get("tool_call_id") != null) {
+                        // tool响应消息，提取简要内容
+                        msgContent = "[工具响应]";
+                    } else {
+                        continue;
+                    }
+                }
+                // 截断过长的单条消息，避免prompt过长
+                if (msgContent.length() > 500) {
+                    msgContent = msgContent.substring(0, 500) + "...(已截断)";
+                }
+                String roleLabel = switch (role) {
+                    case "user" -> "用户";
+                    case "assistant" -> "AI";
+                    case "tool" -> "工具";
+                    default -> role;
+                };
+                conversationText.append(roleLabel).append("：").append(msgContent).append("\n\n");
+            }
+
+            if (conversationText.length() == 0) {
+                return null;
+            }
+
+            // 限制总输入长度，避免超出token限制
+            if (conversationText.length() > 8000) {
+                conversationText.setLength(8000);
+                conversationText.append("\n\n...(对话过长，仅保留前部分)");
+            }
+
+            String systemPrompt = """
+                你是一位创作对话摘要助手。以下是一段即将被压缩的AI与用户的创作对话记录。
+                请从中提取对后续创作至关重要的信息，生成一段简洁摘要。
+
+                重点关注：
+                1. 用户明确表达的偏好或忌讳（如"不喜欢虐心"、"想要轻松风格"）
+                2. 被否决的方案及否决原因（如"尝试过暗黑风格但用户拒绝"）
+                3. 重要的创作决策及其背景（如"从仙侠改为都市，因为用户更熟悉职场题材"）
+                4. 尚未解决的分歧或待定事项
+                5. 用户提及的现实参考（如"参考某部作品的氛围"）
+
+                忽略：
+                - 已在系统参数中记录的硬数据（题材、风格、角色属性等，这些会由其他机制保留）
+                - 闲聊和重复讨论
+                - 工具调用的技术细节，只保留其结果带来的影响
+
+                要求：
+                - 200-300字
+                - 用条目式写法，每条一个要点
+                - 只记录事实和偏好，不要推测或评价
+                - 如果对话内容较少，摘要可以更短
+                """;
+
+            logger.info("[讨论摘要AI调用] 开始生成讨论历程摘要, 对话文本长度={}", conversationText.length());
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Authorization", "Bearer " + deepSeekConfig.getApiKey());
+
+            Map<String, Object> requestBody = new HashMap<>();
+            requestBody.put("model", deepSeekConfig.getModel());
+            requestBody.put("max_tokens", 500);
+            requestBody.put("messages", new Object[]{
+                Map.of("role", "system", "content", systemPrompt),
+                Map.of("role", "user", "content", "请为以下对话生成摘要：\n\n" + conversationText.toString())
+            });
+
+            String requestBodyStr = objectMapper.writeValueAsString(requestBody);
+
+            String response = restTemplate.execute(
+                    deepSeekConfig.getApiUrl(),
+                    org.springframework.http.HttpMethod.POST,
+                    request -> {
+                        request.getHeaders().setContentType(MediaType.APPLICATION_JSON);
+                        request.getHeaders().set("Authorization", "Bearer " + deepSeekConfig.getApiKey());
+                        request.getBody().write(requestBodyStr.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    },
+                    responseEntity -> {
+                        String body = new String(responseEntity.getBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                        JsonNode jsonNode = objectMapper.readTree(body);
+                        JsonNode choices = jsonNode.path("choices");
+                        if (choices.isArray() && choices.size() > 0) {
+                            String content = choices.get(0).path("message").path("content").asText();
+                            // 清理思考标签
+                            if (content != null && !content.isEmpty()) {
+                                content = THINK_TAG_PATTERN.matcher(content).replaceAll("").trim();
+                            }
+                            return content;
+                        }
+                        return null;
+                    }
+            );
+
+            if (response != null && !response.isEmpty()) {
+                logger.info("[讨论摘要AI调用] 摘要生成成功, 长度={}", response.length());
+                return response;
+            }
+
+            logger.warn("[讨论摘要AI调用] API返回空内容");
+            return null;
+
+        } catch (Exception e) {
+            logger.error("[讨论摘要AI调用] 生成讨论摘要失败: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private Map<String, Object> buildStateSummaryMessage(CreativeSession session, List<Map<String, Object>> allMessages, List<Map<String, Object>> recentMessages, String discussionSummary) {
         StringBuilder content = new StringBuilder();
         content.append("[创作状态摘要]\n\n");
+
+        // 0. 讨论历程摘要（AI生成）
+        if (discussionSummary != null && !discussionSummary.isEmpty()) {
+            content.append("## 讨论历程摘要\n");
+            content.append(discussionSummary).append("\n\n");
+        }
 
         // 1. 已确认参数
         Map<String, Object> params = parseParams(session.getExtractedParams());
@@ -3279,11 +3629,23 @@ public class CreativeSessionService {
 
     /**
      * 生成状态摘要并压缩对话（当对话过长时）
-     * 使用结构化数据替代AI生成摘要
+     * 使用结构化数据 + AI讨论历程摘要
      */
     private void generateAndInsertSummary(List<Map<String, Object>> messages, SseEmitter emitter, int turnsSummarized, CreativeSession session) {
         try {
             int messagesBefore = messages.size();
+
+            // 发送SSE事件通知前端：压缩开始
+            try {
+                emitter.send(SseEmitter.event()
+                        .name("compression_start")
+                        .data(objectMapper.writeValueAsString(Map.of(
+                                "message", "正在压缩对话历史，生成AI摘要中...",
+                                "turnsSummarized", turnsSummarized
+                        ))));
+            } catch (Exception e) {
+                logger.debug("发送compression_start事件失败: {}", e.getMessage());
+            }
 
             // 保留第一条（系统提示词）
             Map<String, Object> systemMessage = messages.get(0);
@@ -3301,8 +3663,15 @@ public class CreativeSessionService {
                 return;
             }
 
-            // 构建状态摘要
-            Map<String, Object> stateSummary = buildStateSummaryMessage(session, messages, recentMessages);
+            // 提取即将被丢弃的旧消息
+            int recentStartIndex = messages.size() - recentMessages.size();
+            List<Map<String, Object>> oldMessages = new ArrayList<>(messages.subList(1, recentStartIndex));
+
+            // 调用AI生成讨论历程摘要（降级：失败时返回null）
+            String discussionSummary = generateDiscussionSummary(oldMessages);
+
+            // 构建状态摘要（含AI讨论摘要）
+            Map<String, Object> stateSummary = buildStateSummaryMessage(session, messages, recentMessages, discussionSummary);
 
             // 替换消息历史
             messages.clear();
@@ -3318,6 +3687,7 @@ public class CreativeSessionService {
             logger.info("压缩后消息数: {}", messagesAfter);
             logger.info("保留最近轮数: {}", KEEP_RECENT_TURNS);
             logger.info("压缩对话轮数: {}", turnsSummarized);
+            logger.info("AI讨论摘要: {}", discussionSummary != null ? "已生成" : "未生成");
             logger.info("状态摘要内容:\n{}", stateSummary.get("content"));
             logger.info("==================================");
 
@@ -3327,7 +3697,8 @@ public class CreativeSessionService {
                     .data(objectMapper.writeValueAsString(Map.of(
                             "message", "对话过长，已压缩历史记录",
                             "turnsSummarized", turnsSummarized,
-                            "compressionType", "state_injection"
+                            "compressionType", "hybrid",
+                            "discussionSummaryGenerated", discussionSummary != null
                     ))));
 
         } catch (Exception e) {
@@ -3469,6 +3840,9 @@ public class CreativeSessionService {
                       .append("：").append(memory.getValue()).append("\n");
             }
         }
+
+        // 追加写作质量提示词（配置了自定义则用自定义，否则用默认）
+        prompt.append("\n\n").append(getWritingQualityPrompt());
 
         return prompt.toString();
     }
@@ -4261,11 +4635,12 @@ public class CreativeSessionService {
 
             ### 【绝对禁止清单】
 
-            1. **禁止解释性总结句**：不要对人物情感或行为进行解释概括
-            2. **禁止工整结构**：不要使用"首先、其次、最后"、"第一、第二、第三"等刻板框架
-            3. **禁止过度过渡词**：避免"此外"、"因此"、"总的来说"、"综上所述"等论文式表达
-            4. **禁止空泛情感描述**：如"他感到非常震惊"、"她内心十分复杂"等下定义式描述
-            5. **禁止千篇一律的开头**：不要总用环境描写或时间陈述开篇
+            1. **禁止"不是……而是……"句式**：无论叙述还是对话中，绝对禁止出现"不是……而是……"及其变形（"并非……而是……"、"不是……就是……"等），必须删除或改写
+            2. **禁止解释性总结句**：不要对人物情感或行为进行解释概括
+            3. **禁止工整结构**：不要使用"首先、其次、最后"、"第一、第二、第三"等刻板框架
+            4. **禁止过度过渡词**：避免"此外"、"因此"、"总的来说"、"综上所述"等论文式表达
+            5. **禁止空泛情感描述**：如"他感到非常震惊"、"她内心十分复杂"等下定义式描述
+            6. **禁止千篇一律的开头**：不要总用环境描写或时间陈述开篇
 
             ### 【内心转折表达规则】
 
@@ -4429,6 +4804,16 @@ public class CreativeSessionService {
     }
 
     // ==================== 辅助方法 ====================
+
+    /**
+     * 获取写作质量提示词：如果配置了自定义提示词则用自定义的，否则用默认的
+     */
+    private String getWritingQualityPrompt() {
+        if (writingQualityPrompt != null && !writingQualityPrompt.trim().isEmpty()) {
+            return writingQualityPrompt.trim();
+        }
+        return DEFAULT_WRITING_QUALITY_PROMPT;
+    }
 
     /**
      * 解析消息历史
